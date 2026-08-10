@@ -38,4 +38,5 @@ Suggestions are welcome via this form: [YT Channels - Feature Suggestion](https:
 
 ## License
 
-GPL-3.0-only — see [LICENSE](LICENSE).
+This project is licensed under the GNU General Public License v3.0.
+See the [LICENSE](https://github.com/Project0B/YT-Channels/blob/main/LICENSE.txt) file for the full license text.
