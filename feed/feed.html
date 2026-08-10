@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>YT Channels</title>
+  <link rel="stylesheet" href="feed.css" />
+</head>
+<body>
+  <header class="header-bar">
+    <div class="brand">YT Channels</div>
+    <div class="header-actions">
+      <a class="header-link" href="../options/options.html" target="_blank" rel="noopener">Manage</a>
+      <button id="refresh-button" class="refresh-button">
+        <span class="refresh-icon">⟳</span> Refresh
+      </button>
+    </div>
+  </header>
+
+  <nav id="category-tabs" class="category-tabs"></nav>
+
+  <div id="status-banner" class="status-banner hidden">
+    <span id="status-banner-text"></span>
+    <button id="status-banner-dismiss" class="banner-dismiss">✕</button>
+  </div>
+
+  <main id="content-area" class="content-area">
+    <div id="video-grid" class="video-grid"></div>
+    <div id="empty-state" class="empty-state hidden"></div>
+  </main>
+
+  <script src="feed.js"></script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "YT Channels",
+  "version": "1.0.0",
+  "description": "Curated category feeds for the YouTube channels you follow — grouped, on-demand, no algorithm.",
+  "author": "Project B",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "scripts": [
+      "background/types.js",
+      "background/storage.js",
+      "background/rss.js",
+      "background/resolve.js",
+      "background/background.js"
+    ]
+  },
+  "action": {
+    "default_icon": {
+      "48": "icons/icon-48.png",
+      "96": "icons/icon-96.png",
+      "128": "icons/icon-128.png"
+    },
+    "default_title": "YT Channels"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "permissions": [
+    "storage",
+    "menus",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://www.youtube.com/*",
+    "*://youtube.com/*",
+    "*://youtu.be/*"
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "yt-channels@local.extension",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  }
+}

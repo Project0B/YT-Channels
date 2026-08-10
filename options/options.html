@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Manage Channels — YT Channels</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <header class="page-header">
+    <h1>YT Channels — Manage</h1>
+    <a class="link-button" href="../feed/feed.html" target="_blank" rel="noopener">Open Feed →</a>
+  </header>
+
+  <main>
+    <section class="card" id="categories-section">
+      <h2>Categories</h2>
+      <ul id="category-list" class="category-list"></ul>
+      <form id="new-category-form" class="inline-form">
+        <input type="text" id="new-category-name" placeholder="New category name" autocomplete="off" />
+        <button type="submit">+ New category</button>
+      </form>
+      <p class="error-text" id="category-error"></p>
+    </section>
+
+    <section class="card" id="channels-section">
+      <h2>Channels</h2>
+
+      <form id="add-channel-form" class="inline-form">
+        <input type="text" id="channel-url-input" placeholder="Paste a YouTube channel or video URL" autocomplete="off" />
+        <button type="submit" id="resolve-button">Resolve</button>
+      </form>
+      <p class="hint-text">First time adding a channel? Visit youtube.com once and accept its cookie prompt, then come back here — YouTube won't show channel pages to a browser that's never accepted cookies.</p>
+      <p class="error-text" id="resolve-error"></p>
+
+      <div id="pending-channel" class="pending-channel hidden">
+        <img id="pending-avatar" alt="" />
+        <div class="pending-info">
+          <div class="pending-name" id="pending-name"></div>
+          <div class="pending-categories" id="pending-categories"></div>
+        </div>
+        <div class="pending-actions">
+          <button id="confirm-add-channel">Add</button>
+          <button id="cancel-add-channel" class="secondary">Cancel</button>
+        </div>
+      </div>
+
+      <input type="text" id="channel-search" placeholder="Search channels…" class="search-input" />
+      <ul id="channel-list" class="channel-list"></ul>
+    </section>
+
+    <section class="card" id="settings-section">
+      <h2>Settings</h2>
+      <div class="settings-grid">
+        <label>
+          Cache TTL (minutes)
+          <input type="number" id="setting-cache-ttl" min="5" max="1440" />
+        </label>
+        <label>
+          Videos per category
+          <input type="number" id="setting-videos-limit" min="1" max="500" />
+        </label>
+        <label>
+          Fetch concurrency
+          <input type="number" id="setting-concurrency" min="1" max="20" />
+        </label>
+      </div>
+      <button id="save-settings">Save settings</button>
+      <span id="settings-saved" class="saved-text hidden">Saved ✓</span>
+    </section>
+
+    <section class="card" id="export-import-section">
+      <h2>Export / Import</h2>
+      <div class="export-import-row">
+        <button id="export-config">Export config</button>
+        <label class="file-input-label">
+          Import config
+          <input type="file" id="import-config-file" accept=".txt,.json" hidden />
+        </label>
+      </div>
+      <p class="hint-text">Export saves your categories and channels as <code>yt-channels-config.txt</code>. Import lets you Replace or Merge.</p>
+    </section>
+  </main>
+
+  <div id="confirm-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-text">
+    <div class="modal-box">
+      <p id="confirm-dialog-text"></p>
+      <div class="modal-actions">
+        <button id="confirm-dialog-yes" class="danger">Confirm</button>
+        <button id="confirm-dialog-no" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="import-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="import-dialog-text">
+    <div class="modal-box">
+      <p id="import-dialog-text">Import config: choose how to apply it.</p>
+      <div class="modal-actions">
+        <button id="import-replace" class="danger">Replace</button>
+        <button id="import-merge">Merge</button>
+        <button id="import-cancel" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

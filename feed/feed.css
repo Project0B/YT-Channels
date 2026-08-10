@@ -1,0 +1,292 @@
+:root {
+  --bg: #f9f9f9;
+  --surface: #ffffff;
+  --text: #0f0f0f;
+  --text-secondary: #606060;
+  --border: #e5e5e5;
+  --accent: #065fd4;
+  --accent-text: #ffffff;
+  --chip-bg: #f2f2f2;
+  --chip-active-bg: #0f0f0f;
+  --chip-active-text: #ffffff;
+  --skeleton: #e8e8e8;
+  --warn-bg: #fff8e1;
+  --warn-text: #7a5c00;
+  --warn-border: #f2d675;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f0f0f;
+    --surface: #181818;
+    --text: #f1f1f1;
+    --text-secondary: #aaaaaa;
+    --border: #303030;
+    --accent: #3ea6ff;
+    --accent-text: #0f0f0f;
+    --chip-bg: #272727;
+    --chip-active-bg: #f1f1f1;
+    --chip-active-text: #0f0f0f;
+    --skeleton: #272727;
+    --warn-bg: #3a2f00;
+    --warn-text: #f2d675;
+    --warn-border: #5c4a00;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Roboto, system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow-x: hidden;
+}
+
+.header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 14px;
+}
+.header-link:hover {
+  color: var(--text);
+}
+
+.refresh-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.refresh-button:hover {
+  background: var(--chip-bg);
+}
+.refresh-icon {
+  display: inline-block;
+}
+.refresh-icon.spinning {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.category-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 12px 24px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.category-tab {
+  flex: none;
+  padding: 8px 16px;
+  border-radius: 18px;
+  background: var(--chip-bg);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  border: none;
+}
+.category-tab.active {
+  background: var(--chip-active-bg);
+  color: var(--chip-active-text);
+  font-weight: 600;
+}
+
+.status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 24px;
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  border-bottom: 1px solid var(--warn-border);
+  font-size: 13px;
+}
+
+.banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--warn-text);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+}
+
+.content-area {
+  padding: 20px 24px 40px;
+}
+
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px 16px;
+}
+
+@media (min-width: 700px) {
+  .video-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 1000px) {
+  .video-grid { grid-template-columns: repeat(4, 1fr); }
+}
+@media (min-width: 1300px) {
+  .video-grid { grid-template-columns: repeat(5, 1fr); }
+}
+@media (min-width: 1600px) {
+  .video-grid { grid-template-columns: repeat(6, 1fr); }
+}
+
+.video-card {
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  /* Grid items default to min-width: auto, which lets a card's content
+     (long channel names/titles) blow out its 1fr track and widen the
+     whole grid past the viewport, causing page-level horizontal scroll.
+     min-width: 0 lets the card actually shrink to its column share. */
+  min-width: 0;
+  border-radius: 12px;
+}
+
+.video-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.video-thumb-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--skeleton);
+}
+.video-thumb-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.video-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  min-width: 0;
+}
+
+.video-meta img.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+  background: var(--skeleton);
+}
+
+.video-text {
+  min-width: 0;
+}
+
+.video-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.video-channel {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Skeleton loading state */
+.skeleton-card .video-thumb-wrap {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.skeleton-line {
+  height: 12px;
+  border-radius: 4px;
+  background: var(--skeleton);
+  animation: pulse 1.4s ease-in-out infinite;
+  margin-top: 8px;
+}
+.skeleton-line.short {
+  width: 60%;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  text-align: center;
+  color: var(--text-secondary);
+  gap: 12px;
+}
+.empty-state a,
+.empty-state button {
+  color: var(--accent-text);
+  background: var(--accent);
+  border: none;
+  padding: 8px 18px;
+  border-radius: 18px;
+  text-decoration: none;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.hidden {
+  display: none !important;
+}
