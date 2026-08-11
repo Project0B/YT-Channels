@@ -18,7 +18,7 @@ No API key, no setup beyond installing and adding channels.
 
 ## Install
 
-- **From Mozilla Add-ons**: <AMO_LISTING_URL> *(link once published)*
+- **From Mozilla Add-ons**: [YT Channels add-on](https://addons.mozilla.org/en-US/firefox/addon/yt-channels/)
 - **Temporary/dev install**: clone this repo, open `about:debugging#/runtime/this-firefox` in Firefox, click **Load Temporary Add-on**, and select `manifest.json` from this folder.
 
 ## Known limitations
