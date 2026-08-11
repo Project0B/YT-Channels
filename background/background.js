@@ -7,6 +7,13 @@
 
 const FEED_PAGE_PATH = "feed/feed.html";
 
+// Export *file* schema version — distinct from Storage.CURRENT_SCHEMA_VERSION
+// (the internal browser.storage.local shape, which is unchanged). Exported
+// files now carry a compact per-channel "identifier" instead of the full
+// channelId/name/avatarUrl/sourceUrl/addedAt record (ROADMAP.md §A);
+// internal storage stays verbose for fast, offline rendering.
+const CURRENT_EXPORT_SCHEMA_VERSION = 2;
+
 // ---------------------------------------------------------------------------
 // Concurrency helper
 // ---------------------------------------------------------------------------
@@ -35,6 +42,32 @@ function channelsForCategory(config, categoryId) {
     return config.channels.filter((c) => !c.categoryIds || c.categoryIds.length === 0);
   }
   return config.channels.filter((c) => c.categoryIds && c.categoryIds.includes(categoryId));
+}
+
+// ---------------------------------------------------------------------------
+// Compact channel identifier (ROADMAP.md §A.1)
+// ---------------------------------------------------------------------------
+
+// Reduces a channel to the shortest string that round-trips through
+// resolve.js's normalizeInputUrl fallback branch (which already prepends
+// "https://www.youtube.com/" to any bare path). Prefers the channel-shaped
+// path from sourceUrl (e.g. "@handle", "channel/UC...", "c/Name",
+// "user/Name") since that's what a human recognizes when sharing a list;
+// falls back to "channel/{channelId}" — always resolvable, immune to handle
+// changes — when sourceUrl isn't channel-shaped (e.g. the channel was added
+// via a video/share link, so sourceUrl points at a /watch or youtu.be URL).
+function channelIdentifier(channel) {
+  try {
+    const url = new URL(channel.sourceUrl);
+    const isYoutubeHost = /(^|\.)youtube\.com$/i.test(url.hostname);
+    const path = url.pathname.replace(/^\/+/, "");
+    if (isYoutubeHost && /^(@|channel\/|c\/|user\/)/i.test(path)) {
+      return path;
+    }
+  } catch (e) {
+    // Malformed/missing sourceUrl — fall through to the channelId form.
+  }
+  return `channel/${channel.channelId}`;
 }
 
 function mergeAndSort(videosByChannel, channels, limit) {
@@ -157,15 +190,154 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
 // ---------------------------------------------------------------------------
 
 browser.runtime.onConnect.addListener((port) => {
-  if (port.name !== "feed") return;
-  port.onMessage.addListener((msg) => {
-    if (msg?.type === "GET_CATEGORY_FEED") {
-      handleGetCategoryFeed(msg.categoryId, Boolean(msg.forceRefresh), port).catch((err) => {
-        port.postMessage({ type: "CATEGORY_FEED_DONE", categoryId: msg.categoryId, videos: [], errors: {}, fatalError: String(err) });
+  if (port.name === "feed") {
+    port.onMessage.addListener((msg) => {
+      if (msg?.type === "GET_CATEGORY_FEED") {
+        handleGetCategoryFeed(msg.categoryId, Boolean(msg.forceRefresh), port).catch((err) => {
+          port.postMessage({ type: "CATEGORY_FEED_DONE", categoryId: msg.categoryId, videos: [], errors: {}, fatalError: String(err) });
+        });
+      }
+    });
+  } else if (port.name === "import") {
+    port.onMessage.addListener((msg) => {
+      if (msg?.type === "RESOLVE_CATEGORY_IMPORT") {
+        handleResolveCategoryImport(msg.data, port).catch((err) => {
+          port.postMessage({ type: "IMPORT_RESOLVE_ERROR", error: String(err) });
+        });
+      } else if (msg?.type === "RESOLVE_CONFIG_IMPORT_V2") {
+        handleResolveConfigImportV2(msg.data, port).catch((err) => {
+          port.postMessage({ type: "IMPORT_RESOLVE_ERROR", error: String(err) });
+        });
+      }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Import resolution (ROADMAP.md §A.4) — streamed over the "import" Port so
+// the UI can show progress across what's now a multi-second, per-channel
+// network operation instead of an instant local file read.
+// ---------------------------------------------------------------------------
+
+async function resolveIdentifiers(identifiers, settings, port) {
+  const results = new Array(identifiers.length).fill(null);
+  const errors = [];
+  let resolvedCount = 0;
+
+  await runWithConcurrency(identifiers, settings.fetchConcurrency, async (identifier, index) => {
+    try {
+      results[index] = await Resolve.resolveChannelUrl(identifier);
+    } catch (err) {
+      errors.push({ identifier, error: err.message || "Couldn't resolve" });
+    }
+    resolvedCount++;
+    port.postMessage({ type: "IMPORT_PROGRESS", resolved: resolvedCount, total: identifiers.length });
+  });
+
+  return { results, errors };
+}
+
+async function handleResolveCategoryImport(data, port) {
+  const error = validateCategoryShareShape(data);
+  if (error) {
+    port.postMessage({ type: "IMPORT_RESOLVE_ERROR", error });
+    return;
+  }
+  const settings = await Storage.getSettings();
+  const { results, errors } = await resolveIdentifiers(data.channels, settings, port);
+  // Dedupe by resolved channelId, not by input identifier string — two
+  // different identifiers (e.g. an @handle and a channel/UC... form) can
+  // resolve to the same channel.
+  const seen = new Set();
+  const channels = [];
+  for (const resolved of results) {
+    if (resolved && !seen.has(resolved.channelId)) {
+      seen.add(resolved.channelId);
+      channels.push(resolved);
+    }
+  }
+  port.postMessage({
+    type: "IMPORT_PREVIEW_CATEGORY",
+    categoryName: data.category.name,
+    channels,
+    errors,
+  });
+}
+
+async function handleResolveConfigImportV2(data, port) {
+  const error = validateConfigV2Shape(data);
+  if (error) {
+    port.postMessage({ type: "IMPORT_RESOLVE_ERROR", error });
+    return;
+  }
+  const settings = await Storage.getSettings();
+  const identifiers = data.channels.map((c) => c.identifier);
+  const { results, errors } = await resolveIdentifiers(identifiers, settings, port);
+
+  // Dedupe by resolved channelId (see handleResolveCategoryImport), merging
+  // categoryIds if the same channel appears under two different identifiers.
+  const byChannelId = new Map();
+  data.channels.forEach((entry, index) => {
+    const resolved = results[index];
+    if (!resolved) return;
+    const existing = byChannelId.get(resolved.channelId);
+    if (existing) {
+      existing.categoryIds = Array.from(new Set([...existing.categoryIds, ...entry.categoryIds]));
+    } else {
+      byChannelId.set(resolved.channelId, {
+        ...resolved,
+        categoryIds: [...entry.categoryIds],
+        addedAt: new Date().toISOString(),
       });
     }
   });
-});
+  const channels = Array.from(byChannelId.values());
+
+  port.postMessage({
+    type: "IMPORT_PREVIEW_CONFIG_V2",
+    categories: data.categories,
+    channels,
+    errors,
+  });
+}
+
+function validateCategoryShareShape(data) {
+  if (!data || typeof data !== "object") return "File is not valid JSON";
+  if (typeof data.schemaVersion !== "number") return "Missing schemaVersion";
+  if (data.schemaVersion > CURRENT_EXPORT_SCHEMA_VERSION) return "Unsupported config version";
+  if (!data.category || typeof data.category.name !== "string" || !data.category.name.trim()) {
+    return "Missing category name";
+  }
+  if (!Array.isArray(data.channels) || !data.channels.every((c) => typeof c === "string" && c.trim())) {
+    return "Malformed channel list";
+  }
+  return null;
+}
+
+function validateConfigV2Shape(data) {
+  if (!data || typeof data !== "object") return "File is not valid JSON";
+  if (typeof data.schemaVersion !== "number") return "Missing schemaVersion";
+  if (data.schemaVersion > CURRENT_EXPORT_SCHEMA_VERSION) return "Unsupported config version";
+  if (!Array.isArray(data.categories)) return "Missing categories array";
+  if (!Array.isArray(data.channels)) return "Missing channels array";
+
+  const catIds = new Set();
+  for (const c of data.categories) {
+    if (!c || typeof c.id !== "string" || typeof c.name !== "string" || typeof c.order !== "number") {
+      return "Malformed category entry";
+    }
+    catIds.add(c.id);
+  }
+  for (const ch of data.channels) {
+    if (!ch || typeof ch.identifier !== "string" || !ch.identifier.trim() || !Array.isArray(ch.categoryIds)) {
+      return "Malformed channel entry";
+    }
+    for (const cid of ch.categoryIds) {
+      if (!catIds.has(cid)) return "Channel references an unknown category";
+    }
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Request/response messages (options.js, feed.js)
@@ -288,16 +460,50 @@ async function handleMessage(message) {
       const config = await Storage.getConfig();
       return {
         exportData: {
-          schemaVersion: config.schemaVersion,
+          schemaVersion: CURRENT_EXPORT_SCHEMA_VERSION,
           exportedAt: new Date().toISOString(),
           categories: config.categories,
-          channels: config.channels,
+          channels: config.channels.map((ch) => ({
+            identifier: channelIdentifier(ch),
+            categoryIds: ch.categoryIds,
+          })),
+        },
+      };
+    }
+
+    case "EXPORT_CATEGORY": {
+      const config = await Storage.getConfig();
+      const category = config.categories.find((c) => c.id === message.categoryId);
+      if (!category) return { error: "Category not found" };
+      const channels = config.channels.filter((c) => c.categoryIds.includes(category.id));
+      return {
+        exportData: {
+          schemaVersion: CURRENT_EXPORT_SCHEMA_VERSION,
+          exportedAt: new Date().toISOString(),
+          shareType: "category",
+          category: { name: category.name },
+          channels: channels.map((ch) => channelIdentifier(ch)),
         },
       };
     }
 
     case "IMPORT_CONFIG": {
       return importConfig(message.data, message.mode);
+    }
+
+    case "COMMIT_CATEGORY_IMPORT": {
+      return commitCategoryImport(message.categoryName, message.channels, message.collisionMode);
+    }
+
+    case "COMMIT_CONFIG_IMPORT_V2": {
+      return importConfig(
+        {
+          schemaVersion: Storage.CURRENT_SCHEMA_VERSION,
+          categories: message.categories,
+          channels: message.channels,
+        },
+        message.mode
+      );
     }
 
     default:
@@ -387,6 +593,57 @@ async function importConfig(data, mode) {
       ...importedChannel,
       categoryIds: importedChannel.categoryIds.map((cid) => importIdToLocalId.get(cid)).filter(Boolean),
     });
+  }
+
+  await Storage.setConfig(config);
+  return { config };
+}
+
+// Commits an already-resolved, already-previewed category import
+// (ROADMAP.md §A.2). `channels` are full resolved records
+// ({channelId, name, avatarUrl, sourceUrl}), not identifiers — resolution
+// already happened during the RESOLVE_CATEGORY_IMPORT preview step.
+async function commitCategoryImport(categoryName, channels, collisionMode) {
+  const config = await Storage.getConfig();
+  const lowerName = categoryName.trim().toLowerCase();
+  let targetCategory = config.categories.find((c) => c.name.toLowerCase() === lowerName);
+
+  if (targetCategory && collisionMode === "new") {
+    let suffix = 2;
+    let candidateName = `${categoryName} (${suffix})`;
+    while (config.categories.some((c) => c.name.toLowerCase() === candidateName.toLowerCase())) {
+      suffix++;
+      candidateName = `${categoryName} (${suffix})`;
+    }
+    targetCategory = { id: Storage.genId("cat"), name: candidateName, order: config.categories.length };
+    config.categories.push(targetCategory);
+  } else if (!targetCategory) {
+    targetCategory = { id: Storage.genId("cat"), name: categoryName, order: config.categories.length };
+    config.categories.push(targetCategory);
+  }
+  // else: targetCategory already exists and collisionMode === "merge" — reuse it as-is.
+
+  // Deliberate divergence from importConfig()'s merge semantics above: that
+  // merge never touches an existing channel's categoryIds. Importing a
+  // category means "put these channels in this category", so an existing
+  // channel gets the category added to it rather than being left alone
+  // (ROADMAP.md §A.2's "deliberate divergence" note).
+  for (const ch of channels) {
+    const existing = config.channels.find((c) => c.channelId === ch.channelId);
+    if (existing) {
+      if (!existing.categoryIds.includes(targetCategory.id)) {
+        existing.categoryIds.push(targetCategory.id);
+      }
+    } else {
+      config.channels.push({
+        channelId: ch.channelId,
+        name: ch.name,
+        avatarUrl: ch.avatarUrl,
+        sourceUrl: ch.sourceUrl,
+        categoryIds: [targetCategory.id],
+        addedAt: new Date().toISOString(),
+      });
+    }
   }
 
   await Storage.setConfig(config);

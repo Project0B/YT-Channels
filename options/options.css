@@ -320,6 +320,8 @@ button.danger {
   border-radius: 12px;
   padding: 20px;
   max-width: 360px;
+  max-height: 80vh;
+  overflow-y: auto;
   box-shadow: var(--shadow);
 }
 .modal-actions {
@@ -327,6 +329,52 @@ button.danger {
   gap: 8px;
   justify-content: flex-end;
   margin-top: 14px;
+}
+
+#import-category-preview-dialog .modal-box {
+  max-width: 440px;
+  width: 100%;
+}
+
+.channel-preview-list {
+  list-style: none;
+  margin: 10px 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.channel-preview-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.channel-preview-list img {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--chip-bg);
+  flex: none;
+}
+
+.collision-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--chip-bg);
+  font-size: 13px;
+}
+.collision-choice label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .toast {

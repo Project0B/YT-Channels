@@ -77,7 +77,7 @@
           <input type="file" id="import-config-file" accept=".txt,.json" hidden />
         </label>
       </div>
-      <p class="hint-text">Export saves your categories and channels as <code>yt-channels-config.txt</code>. Import lets you Replace or Merge.</p>
+      <p class="hint-text">Export saves your categories and channels as <code>yt-channels-config.txt</code>. Import lets you Replace or Merge. To share just one category with someone else, use the Share button on that category above instead.</p>
     </section>
   </main>
 
@@ -98,6 +98,30 @@
         <button id="import-replace" class="danger">Replace</button>
         <button id="import-merge">Merge</button>
         <button id="import-cancel" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="import-progress-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="import-progress-text">
+    <div class="modal-box">
+      <p id="import-progress-text">Resolving channels…</p>
+    </div>
+  </div>
+
+  <div id="import-category-preview-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="import-preview-category-name">
+    <div class="modal-box">
+      <h3 id="import-preview-category-name"></h3>
+      <p id="import-preview-summary" class="hint-text"></p>
+      <ul id="import-preview-channel-list" class="channel-preview-list"></ul>
+      <p id="import-preview-errors" class="error-text"></p>
+      <div id="import-collision-choice" class="collision-choice hidden">
+        <p class="hint-text">You already have a category with this name.</p>
+        <label><input type="radio" name="collision-mode" value="merge" checked /> Merge into existing category</label>
+        <label><input type="radio" name="collision-mode" value="new" /> Import as a new, separate category</label>
+      </div>
+      <div class="modal-actions">
+        <button id="import-preview-confirm">Import</button>
+        <button id="import-preview-cancel" class="secondary">Cancel</button>
       </div>
     </div>
   </div>

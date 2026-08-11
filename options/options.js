@@ -62,14 +62,29 @@ function renderCategories() {
     downBtn.addEventListener("click", () => moveCategory(sorted, idx, 1));
     reorder.append(upBtn, downBtn);
 
+    const shareBtn = document.createElement("button");
+    shareBtn.className = "secondary";
+    shareBtn.textContent = "Share";
+    shareBtn.title = "Export just this category to share with someone else";
+    shareBtn.addEventListener("click", () => shareCategory(cat));
+
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "remove-button";
     deleteBtn.textContent = "Delete";
     deleteBtn.addEventListener("click", () => deleteCategory(cat));
 
-    li.append(reorder, nameSpan, deleteBtn);
+    li.append(reorder, nameSpan, shareBtn, deleteBtn);
     list.appendChild(li);
   });
+}
+
+async function shareCategory(cat) {
+  const result = await send("EXPORT_CATEGORY", { categoryId: cat.id });
+  if (result.error) {
+    showToast(result.error);
+    return;
+  }
+  downloadJson(result.exportData, `yt-channels-category-${slugify(cat.name)}.txt`);
 }
 
 async function moveCategory(sorted, idx, direction) {
@@ -341,45 +356,155 @@ function clampNumber(value, min, max, fallback) {
 // Export / Import
 // ---------------------------------------------------------------------------
 
+function downloadJson(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function slugify(name) {
+  return (
+    name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "category"
+  );
+}
+
 function wireExportImport() {
   $("export-config").addEventListener("click", async () => {
     const { exportData } = await send("EXPORT_CONFIG");
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "yt-channels-config.txt";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadJson(exportData, "yt-channels-config.txt");
   });
 
   $("import-config-file").addEventListener("change", async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const text = await file.text();
+    e.target.value = "";
+
     let data;
     try {
       data = JSON.parse(text);
     } catch (err) {
       showToast("Invalid file — not valid JSON");
-      e.target.value = "";
       return;
     }
-    const mode = await showImportDialog();
-    e.target.value = "";
-    if (!mode) return;
-    const result = await send("IMPORT_CONFIG", { data, mode });
-    if (result.error) {
-      showToast(`Import failed: ${result.error}`);
-      return;
+
+    if (data && data.shareType === "category") {
+      await runCategoryImportFlow(data);
+    } else if (data && data.schemaVersion === 2 && Array.isArray(data.categories) && Array.isArray(data.channels)) {
+      await runConfigImportV2Flow(data);
+    } else {
+      // Legacy schemaVersion: 1 full-config file — unchanged flow, no
+      // resolution needed since the file already carries full channel data.
+      const mode = await showImportDialog();
+      if (!mode) return;
+      const result = await send("IMPORT_CONFIG", { data, mode });
+      if (result.error) {
+        showToast(`Import failed: ${result.error}`);
+        return;
+      }
+      state.config = result.config;
+      renderCategories();
+      renderChannels();
+      showToast("Import successful");
     }
-    state.config = result.config;
-    renderCategories();
-    renderChannels();
-    showToast("Import successful");
   });
+}
+
+// ---------------------------------------------------------------------------
+// Compact import: identifier resolution (ROADMAP.md §A.2-A.4)
+// ---------------------------------------------------------------------------
+
+// Runs a RESOLVE_* message over a fresh "import" Port, showing progress via
+// the resolving modal, and resolves with the resulting preview message (or
+// an error). Mirrors feed.js's per-request Port pattern.
+function resolveOverPort(requestType, data, previewType) {
+  showImportProgress("Resolving channels…");
+  return new Promise((resolve) => {
+    const port = browser.runtime.connect({ name: "import" });
+    port.onMessage.addListener((msg) => {
+      if (msg.type === "IMPORT_PROGRESS") {
+        setImportProgressText(`Resolving channels… (${msg.resolved}/${msg.total})`);
+      } else if (msg.type === previewType) {
+        hideImportProgress();
+        port.disconnect();
+        resolve({ ok: true, ...msg });
+      } else if (msg.type === "IMPORT_RESOLVE_ERROR") {
+        hideImportProgress();
+        port.disconnect();
+        resolve({ ok: false, error: msg.error });
+      }
+    });
+    port.postMessage({ type: requestType, data });
+  });
+}
+
+async function runCategoryImportFlow(data) {
+  const preview = await resolveOverPort("RESOLVE_CATEGORY_IMPORT", data, "IMPORT_PREVIEW_CATEGORY");
+  if (!preview.ok) {
+    showToast(`Import failed: ${preview.error}`);
+    return;
+  }
+  if (preview.channels.length === 0) {
+    showToast("Nothing in that file could be resolved");
+    return;
+  }
+
+  const collision = state.config.categories.find(
+    (c) => c.name.toLowerCase() === preview.categoryName.toLowerCase()
+  );
+  const choice = await showCategoryImportPreview(preview, Boolean(collision));
+  if (!choice.confirmed) return;
+
+  const result = await send("COMMIT_CATEGORY_IMPORT", {
+    categoryName: preview.categoryName,
+    channels: preview.channels,
+    collisionMode: choice.collisionMode,
+  });
+  state.config = result.config;
+  renderCategories();
+  renderChannels();
+  const failedNote = preview.errors.length > 0 ? ` — ${preview.errors.length} couldn't be resolved` : "";
+  showToast(`Imported "${preview.categoryName}"${failedNote}`);
+}
+
+async function runConfigImportV2Flow(data) {
+  const preview = await resolveOverPort("RESOLVE_CONFIG_IMPORT_V2", data, "IMPORT_PREVIEW_CONFIG_V2");
+  if (!preview.ok) {
+    showToast(`Import failed: ${preview.error}`);
+    return;
+  }
+  if (preview.channels.length === 0) {
+    showToast("Nothing in that file could be resolved");
+    return;
+  }
+
+  const mode = await showImportDialog();
+  if (!mode) return;
+
+  const result = await send("COMMIT_CONFIG_IMPORT_V2", {
+    categories: preview.categories,
+    channels: preview.channels,
+    mode,
+  });
+  if (result.error) {
+    showToast(`Import failed: ${result.error}`);
+    return;
+  }
+  state.config = result.config;
+  renderCategories();
+  renderChannels();
+  const failedNote = preview.errors.length > 0 ? ` — ${preview.errors.length} couldn't be resolved` : "";
+  showToast(`Import successful${failedNote}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +552,77 @@ function showImportDialog() {
     const onCancel = () => cleanup(null);
     replaceBtn.addEventListener("click", onReplace);
     mergeBtn.addEventListener("click", onMerge);
+    cancelBtn.addEventListener("click", onCancel);
+  });
+}
+
+function showImportProgress(text) {
+  $("import-progress-text").textContent = text;
+  $("import-progress-dialog").classList.remove("hidden");
+}
+
+function setImportProgressText(text) {
+  $("import-progress-text").textContent = text;
+}
+
+function hideImportProgress() {
+  $("import-progress-dialog").classList.add("hidden");
+}
+
+// preview: {categoryName, channels: [{channelId,name,avatarUrl,sourceUrl}], errors: [{identifier,error}]}
+// Resolves {confirmed: false} on cancel, or {confirmed: true, collisionMode: "merge"|"new"|null}.
+function showCategoryImportPreview(preview, hasCollision) {
+  return new Promise((resolve) => {
+    $("import-preview-category-name").textContent = preview.categoryName;
+    const count = preview.channels.length;
+    $("import-preview-summary").textContent = `${count} channel${count === 1 ? "" : "s"} resolved`;
+
+    const list = $("import-preview-channel-list");
+    list.replaceChildren();
+    for (const ch of preview.channels) {
+      const li = document.createElement("li");
+      const img = document.createElement("img");
+      img.src = ch.avatarUrl || "";
+      img.alt = "";
+      const span = document.createElement("span");
+      span.textContent = ch.name;
+      li.append(img, span);
+      list.appendChild(li);
+    }
+
+    const errorsEl = $("import-preview-errors");
+    errorsEl.textContent =
+      preview.errors.length > 0
+        ? `${preview.errors.length} channel(s) couldn't be resolved and will be skipped: ${preview.errors
+            .map((e) => e.identifier)
+            .join(", ")}`
+        : "";
+
+    const collisionEl = $("import-collision-choice");
+    collisionEl.classList.toggle("hidden", !hasCollision);
+    if (hasCollision) {
+      collisionEl.querySelector('input[value="merge"]').checked = true;
+    }
+
+    const modal = $("import-category-preview-dialog");
+    modal.classList.remove("hidden");
+
+    const cleanup = (result) => {
+      modal.classList.add("hidden");
+      confirmBtn.removeEventListener("click", onConfirm);
+      cancelBtn.removeEventListener("click", onCancel);
+      resolve(result);
+    };
+    const confirmBtn = $("import-preview-confirm");
+    const cancelBtn = $("import-preview-cancel");
+    const onConfirm = () => {
+      const collisionMode = hasCollision
+        ? collisionEl.querySelector('input[name="collision-mode"]:checked').value
+        : null;
+      cleanup({ confirmed: true, collisionMode });
+    };
+    const onCancel = () => cleanup({ confirmed: false });
+    confirmBtn.addEventListener("click", onConfirm);
     cancelBtn.addEventListener("click", onCancel);
   });
 }
