@@ -77,19 +77,23 @@ const PAGE_FETCH_TIMEOUT_MS = 15000;
 
 // See the matching helper in rss.js: plain fetch() never times out on its
 // own, so a stalled request would otherwise hang the Manage page's
-// "Resolve" button (and its await chain) indefinitely.
+// "Resolve" button (and its await chain) indefinitely. The timer is kept
+// alive (via the returned clearTimer) until the caller finishes reading the
+// response body, not just until fetch() resolves — otherwise a connection
+// that sends headers promptly but stalls mid-body would hang response.text()
+// with no timeout protection at all (see the matching note in rss.js).
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return { response, clearTimer: () => clearTimeout(timeoutId) };
   } catch (e) {
+    clearTimeout(timeoutId);
     if (e.name === "AbortError") {
       throw new Error("Request timed out");
     }
     throw e;
-  } finally {
-    clearTimeout(timeoutId);
   }
 }
 
@@ -101,24 +105,42 @@ async function fetchPage(url) {
   // requests. Including credentials lets the user's normal youtube.com
   // session (e.g. an already-accepted CONSENT cookie) through, which is
   // what makes channel-page resolution work at all.
-  const response = await fetchWithTimeout(url, { credentials: "include" }, PAGE_FETCH_TIMEOUT_MS);
-  if (!response.ok) {
-    throw new Error("Couldn't find a channel at that URL");
+  const { response, clearTimer } = await fetchWithTimeout(
+    url,
+    { credentials: "include" },
+    PAGE_FETCH_TIMEOUT_MS
+  );
+  try {
+    if (!response.ok) {
+      throw new Error("Couldn't find a channel at that URL");
+    }
+    const html = await response.text();
+    if (isConsentWallPage(html)) {
+      throw new Error(
+        "YouTube is asking for cookie consent before showing this page. Visit youtube.com in a regular tab, accept the cookie prompt, then try again."
+      );
+    }
+    return html;
+  } catch (e) {
+    if (e.name === "AbortError") {
+      throw new Error("Request timed out");
+    }
+    throw e;
+  } finally {
+    clearTimer();
   }
-  const html = await response.text();
-  if (isConsentWallPage(html)) {
-    throw new Error(
-      "YouTube is asking for cookie consent before showing this page. Visit youtube.com in a regular tab, accept the cookie prompt, then try again."
-    );
-  }
-  return html;
 }
 
 /**
  * @param {string} inputUrl
  * @returns {Promise<{channelId: string, name: string, avatarUrl: string, sourceUrl: string}>}
  */
-const VIDEO_URL_RE = /\/watch\?|youtu\.be\//i;
+// Matches /watch, youtu.be/, and /shorts/ links — all "video-shaped" pages
+// whose og:title/og:image describe the video, not the channel (see the
+// isChannelShapedPage comment below). Shorts URLs were originally missed
+// here, which mislabeled a channel added via a Shorts link with that
+// Short's own thumbnail/title.
+const VIDEO_URL_RE = /\/watch\?|youtu\.be\/|\/shorts\//i;
 
 async function resolveChannelUrl(inputUrl) {
   const normalized = normalizeInputUrl(inputUrl);

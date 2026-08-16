@@ -78,28 +78,48 @@ const FEED_FETCH_TIMEOUT_MS = 15000;
 // blocks the entire category from ever finishing (no CATEGORY_FEED_DONE,
 // spinner stuck, only fixable by reloading the page). Aborting after a
 // bounded timeout turns that into an ordinary, already-handled fetch error.
+//
+// fetch() itself only resolves once response *headers* arrive — a
+// connection that sends 200 OK promptly but then stalls mid-body would hang
+// response.text() forever if the timer were cleared as soon as fetch()
+// resolved. The timer is instead kept alive (via the returned clearTimer)
+// until the caller has finished reading the body, so a stalled body read
+// gets aborted too, not just a stalled header read.
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    return { response, clearTimer: () => clearTimeout(timeoutId) };
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e.name === "AbortError") {
+      throw new Error("Feed request timed out");
+    }
+    throw e;
+  }
+}
+
+async function fetchFeed(url) {
+  const { response, clearTimer } = await fetchWithTimeout(
+    url,
+    { credentials: "omit" },
+    FEED_FETCH_TIMEOUT_MS
+  );
+  try {
+    if (!response.ok) {
+      throw new Error(`Feed request failed with status ${response.status}`);
+    }
+    const text = await response.text();
+    return parseFeedXml(text);
   } catch (e) {
     if (e.name === "AbortError") {
       throw new Error("Feed request timed out");
     }
     throw e;
   } finally {
-    clearTimeout(timeoutId);
+    clearTimer();
   }
-}
-
-async function fetchFeed(url) {
-  const response = await fetchWithTimeout(url, { credentials: "omit" }, FEED_FETCH_TIMEOUT_MS);
-  if (!response.ok) {
-    throw new Error(`Feed request failed with status ${response.status}`);
-  }
-  const text = await response.text();
-  return parseFeedXml(text);
 }
 
 /**

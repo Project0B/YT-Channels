@@ -40,8 +40,14 @@ async function getConfig() {
   const result = await browser.storage.local.get(STORAGE_KEYS.CONFIG);
   const config = result[STORAGE_KEYS.CONFIG];
   if (!config) {
-    await setConfig(DEFAULT_CONFIG);
-    return { ...DEFAULT_CONFIG };
+    // Deep-clone rather than shallow-spread: a shallow `{ ...DEFAULT_CONFIG }`
+    // still shares the same `.categories`/`.channels` array instances as the
+    // module-level DEFAULT_CONFIG, so the first config-mutating handler to
+    // `.push()` onto them (CREATE_CATEGORY, SAVE_CHANNEL, etc.) would mutate
+    // the shared default in place.
+    const fresh = structuredClone(DEFAULT_CONFIG);
+    await setConfig(fresh);
+    return fresh;
   }
   return config;
 }
@@ -64,10 +70,31 @@ async function getCacheEntry(channelId) {
   return cache[channelId] || null;
 }
 
-async function setCacheEntry(channelId, entry) {
+// setCacheEntry() is a read-modify-write over the single shared `cache`
+// storage key. handleGetCategoryFeed() in background.js calls this once per
+// channel from parallel runWithConcurrency() workers, so without
+// serialization two calls can both read the cache before either writes back
+// — the later write then silently clobbers the earlier channel's entry.
+// Chaining every call onto a single promise forces writes for *any* channel
+// to run one at a time, so each one's getCache() always sees the previous
+// one's setCache() having already landed. The chain continues past a
+// failed write (via the second .then handler) so one rejected write doesn't
+// wedge every subsequent call.
+let cacheWriteChain = Promise.resolve();
+
+async function writeCacheEntry(channelId, entry) {
   const cache = await getCache();
   cache[channelId] = entry;
   await setCache(cache);
+}
+
+function setCacheEntry(channelId, entry) {
+  const task = cacheWriteChain.then(
+    () => writeCacheEntry(channelId, entry),
+    () => writeCacheEntry(channelId, entry)
+  );
+  cacheWriteChain = task.catch(() => {});
+  return task;
 }
 
 async function getSettings() {

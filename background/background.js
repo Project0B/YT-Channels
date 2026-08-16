@@ -97,6 +97,27 @@ function mergeAndSort(videosByChannel, channels, limit, watched) {
 // ---------------------------------------------------------------------------
 
 async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
+  // feed.js disconnects the previous port whenever a new category is
+  // requested (e.g. rapid tab switching), but nothing here used to notice —
+  // this request just kept running and its next port.postMessage() would
+  // throw ("Attempt to postMessage on disconnected port"). safePost() below
+  // makes every reply a no-op once the port is known gone, and the worker
+  // skips starting fetches for channels it hasn't reached yet once
+  // abandoned, instead of only discovering the disconnect via a thrown
+  // exception after the work was already done.
+  let disconnected = false;
+  port.onDisconnect.addListener(() => {
+    disconnected = true;
+  });
+  const safePost = (msg) => {
+    if (disconnected) return;
+    try {
+      port.postMessage(msg);
+    } catch (e) {
+      disconnected = true;
+    }
+  };
+
   const config = await Storage.getConfig();
   const settings = await Storage.getSettings();
   const cache = await Storage.getCache();
@@ -104,7 +125,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
 
   const channels = channelsForCategory(config, categoryId);
   if (channels.length === 0) {
-    port.postMessage({ type: "CATEGORY_FEED_DONE", categoryId, videos: [], errors: {}, emptyCategory: true });
+    safePost({ type: "CATEGORY_FEED_DONE", categoryId, videos: [], errors: {}, emptyCategory: true });
     return;
   }
 
@@ -132,8 +153,9 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
   }
 
   const postProgress = () => {
+    if (disconnected) return;
     const videos = mergeAndSort(videosByChannel, channels, settings.videosPerCategoryLimit, watched);
-    port.postMessage({
+    safePost({
       type: "CATEGORY_FEED_PARTIAL",
       categoryId,
       videos,
@@ -147,6 +169,9 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
 
   if (toFetch.length > 0) {
     await runWithConcurrency(toFetch, settings.fetchConcurrency, async (channel) => {
+      // Abandoned mid-flight (port disconnected) — don't start fetches for
+      // channels this run hasn't reached yet.
+      if (disconnected) return;
       const result = await Rss.fetchChannelVideos(channel.channelId);
       const priorEntry = cache[channel.channelId];
 
@@ -180,7 +205,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
   }
 
   const finalVideos = mergeAndSort(videosByChannel, channels, settings.videosPerCategoryLimit, watched);
-  port.postMessage({
+  safePost({
     type: "CATEGORY_FEED_DONE",
     categoryId,
     videos: finalVideos,
@@ -198,7 +223,13 @@ browser.runtime.onConnect.addListener((port) => {
     port.onMessage.addListener((msg) => {
       if (msg?.type === "GET_CATEGORY_FEED") {
         handleGetCategoryFeed(msg.categoryId, Boolean(msg.forceRefresh), port).catch((err) => {
-          port.postMessage({ type: "CATEGORY_FEED_DONE", categoryId: msg.categoryId, videos: [], errors: {}, fatalError: String(err) });
+          // The port may already be disconnected (see handleGetCategoryFeed's
+          // safePost) — posting to a dead port throws, so guard this too.
+          try {
+            port.postMessage({ type: "CATEGORY_FEED_DONE", categoryId: msg.categoryId, videos: [], errors: {}, fatalError: String(err) });
+          } catch (e) {
+            // Nothing left to notify.
+          }
         });
       }
     });
