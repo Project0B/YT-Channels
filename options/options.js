@@ -6,11 +6,34 @@
 let state = {
   config: { schemaVersion: 1, categories: [], channels: [] },
   settings: {},
-  pendingChannel: null, // {channelId, name, avatarUrl, sourceUrl, selectedCategoryIds: Set}
+  currentDetailCategoryId: null, // set while the category detail view (ROADMAP.md §B.2) is open
 };
 
-function send(type, extra) {
-  return browser.runtime.sendMessage({ type, ...extra });
+// Message types that can change what the feed page would render (config or
+// settings). Tracked so "Open Feed" can tell an already-open feed tab to
+// reload only when something here actually changed, instead of reloading it
+// unconditionally on every visit.
+const CONFIG_CHANGING_MESSAGE_TYPES = new Set([
+  "SAVE_CHANNEL",
+  "UPDATE_CHANNEL_CATEGORIES",
+  "REMOVE_CHANNEL",
+  "CREATE_CATEGORY",
+  "RENAME_CATEGORY",
+  "DELETE_CATEGORY",
+  "REORDER_CATEGORIES",
+  "UPDATE_SETTINGS",
+  "IMPORT_CONFIG",
+  "COMMIT_CATEGORY_IMPORT",
+  "COMMIT_CONFIG_IMPORT_V2",
+]);
+let configChangedSinceLastFeedVisit = false;
+
+async function send(type, extra) {
+  const result = await browser.runtime.sendMessage({ type, ...extra });
+  if (CONFIG_CHANGING_MESSAGE_TYPES.has(type) && result && !result.error) {
+    configChangedSinceLastFeedVisit = true;
+  }
+  return result;
 }
 
 function $(id) {
@@ -43,37 +66,61 @@ function renderCategories() {
   sorted.forEach((cat, idx) => {
     const li = document.createElement("li");
     li.className = "category-row";
+    // Row click opens the category detail view (ROADMAP.md §B.2). Every
+    // interactive control within the row must stopPropagation so it doesn't
+    // also trigger that — rename moved behind its own icon for exactly this
+    // reason, rather than living on a name-click that would now collide.
+    li.addEventListener("click", () => openCategoryDetail(cat.id));
 
     const nameSpan = document.createElement("span");
     nameSpan.className = "category-name";
     nameSpan.textContent = cat.name;
-    nameSpan.title = "Click to rename";
-    nameSpan.addEventListener("click", () => startRenameCategory(li, cat));
+
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "icon-button";
+    renameBtn.title = "Rename category";
+    renameBtn.textContent = "✎";
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      startRenameCategory(li, cat);
+    });
 
     const reorder = document.createElement("div");
     reorder.className = "reorder-buttons";
     const upBtn = document.createElement("button");
     upBtn.textContent = "▲";
     upBtn.disabled = idx === 0;
-    upBtn.addEventListener("click", () => moveCategory(sorted, idx, -1));
+    upBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      moveCategory(sorted, idx, -1);
+    });
     const downBtn = document.createElement("button");
     downBtn.textContent = "▼";
     downBtn.disabled = idx === sorted.length - 1;
-    downBtn.addEventListener("click", () => moveCategory(sorted, idx, 1));
+    downBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      moveCategory(sorted, idx, 1);
+    });
     reorder.append(upBtn, downBtn);
 
     const shareBtn = document.createElement("button");
     shareBtn.className = "secondary";
     shareBtn.textContent = "Share";
     shareBtn.title = "Export just this category to share with someone else";
-    shareBtn.addEventListener("click", () => shareCategory(cat));
+    shareBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      shareCategory(cat);
+    });
 
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "remove-button";
     deleteBtn.textContent = "Delete";
-    deleteBtn.addEventListener("click", () => deleteCategory(cat));
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteCategory(cat);
+    });
 
-    li.append(reorder, nameSpan, shareBtn, deleteBtn);
+    li.append(reorder, nameSpan, renameBtn, shareBtn, deleteBtn);
     list.appendChild(li);
   });
 }
@@ -105,6 +152,7 @@ function startRenameCategory(li, cat) {
   input.className = "rename-input";
   input.type = "text";
   input.value = cat.name;
+  input.addEventListener("click", (e) => e.stopPropagation());
   li.appendChild(input);
   input.focus();
   input.select();
@@ -141,6 +189,9 @@ async function deleteCategory(cat) {
   if (!ok) return;
   const { config } = await send("DELETE_CATEGORY", { categoryId: cat.id });
   state.config = config;
+  if (state.currentDetailCategoryId === cat.id) {
+    closeCategoryDetail();
+  }
   renderCategories();
   renderChannels();
 }
@@ -160,6 +211,146 @@ function wireNewCategoryForm() {
     state.config = result.config;
     input.value = "";
     renderCategories();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Category detail view (ROADMAP.md §B.2)
+// ---------------------------------------------------------------------------
+
+function openCategoryDetail(categoryId) {
+  state.currentDetailCategoryId = categoryId;
+  $("list-view").classList.add("hidden");
+  $("category-detail-view").classList.remove("hidden");
+  renderCategoryDetail();
+  window.scrollTo(0, 0);
+}
+
+function closeCategoryDetail() {
+  state.currentDetailCategoryId = null;
+  $("category-detail-view").classList.add("hidden");
+  $("list-view").classList.remove("hidden");
+}
+
+function findCurrentDetailCategory() {
+  return state.config.categories.find((c) => c.id === state.currentDetailCategoryId);
+}
+
+function renderCategoryDetail() {
+  const category = findCurrentDetailCategory();
+  if (!category) {
+    // Deleted from elsewhere, or stale state — bail back to the list rather
+    // than showing a detail view for a category that no longer exists.
+    closeCategoryDetail();
+    return;
+  }
+  $("category-detail-name").textContent = category.name;
+
+  const list = $("category-detail-channel-list");
+  list.replaceChildren();
+  const members = state.config.channels
+    .filter((ch) => ch.categoryIds.includes(category.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (members.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "hint-text";
+    empty.textContent = "No channels in this category yet — add one above.";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const channel of members) {
+    const li = document.createElement("li");
+    li.className = "channel-row";
+
+    const img = document.createElement("img");
+    img.src = channel.avatarUrl || "";
+    img.alt = "";
+
+    const info = document.createElement("div");
+    info.className = "channel-info";
+    const nameDiv = document.createElement("div");
+    nameDiv.className = "channel-name";
+    nameDiv.textContent = channel.name;
+    info.append(nameDiv);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "remove-button";
+    removeBtn.textContent = "Remove from category";
+    removeBtn.addEventListener("click", async () => {
+      const nextCategoryIds = channel.categoryIds.filter((id) => id !== category.id);
+      const result = await send("UPDATE_CHANNEL_CATEGORIES", {
+        channelId: channel.channelId,
+        categoryIds: nextCategoryIds,
+      });
+      state.config = result.config;
+      renderCategoryDetail();
+    });
+
+    li.append(img, info, removeBtn);
+    list.appendChild(li);
+  }
+}
+
+function startRenameCategoryDetail(category) {
+  const nameEl = $("category-detail-name");
+  const input = document.createElement("input");
+  input.className = "rename-input";
+  input.type = "text";
+  input.value = category.name;
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  const restore = (name) => {
+    const span = document.createElement("span");
+    span.className = "category-detail-name";
+    span.id = "category-detail-name";
+    span.textContent = name;
+    input.replaceWith(span);
+  };
+
+  const commit = async () => {
+    const name = input.value.trim();
+    if (!name || name === category.name) {
+      restore(category.name);
+      return;
+    }
+    const result = await send("RENAME_CATEGORY", { categoryId: category.id, name });
+    if (result.error) {
+      showToast(result.error);
+      restore(category.name);
+      return;
+    }
+    state.config = result.config;
+    renderCategories();
+    restore(name);
+  };
+
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.blur();
+    if (e.key === "Escape") restore(category.name);
+  });
+}
+
+function wireCategoryDetailHeader() {
+  $("category-detail-back").addEventListener("click", closeCategoryDetail);
+
+  $("category-detail-rename").addEventListener("click", () => {
+    const category = findCurrentDetailCategory();
+    if (category) startRenameCategoryDetail(category);
+  });
+
+  $("category-detail-share").addEventListener("click", () => {
+    const category = findCurrentDetailCategory();
+    if (category) shareCategory(category);
+  });
+
+  $("category-detail-delete").addEventListener("click", () => {
+    const category = findCurrentDetailCategory();
+    if (category) deleteCategory(category);
   });
 }
 
@@ -248,52 +439,71 @@ function renderChannels() {
   void categoryById; // reserved for future use (e.g. sort-by-category)
 }
 
-function wireAddChannelForm() {
-  $("add-channel-form").addEventListener("submit", async (e) => {
+// Reusable resolve → pending-preview → confirm add-channel flow, shared by
+// the global Channels section and the category detail view (ROADMAP.md
+// §B.3) — both always offer the full multi-category checklist; the only
+// difference is which category (if any) the checklist pre-checks by
+// default. `getDefaultCategoryId` is a thunk (not a fixed value) since the
+// detail-view instance's "current category" changes as the user navigates
+// between categories without the page reloading.
+function createAddChannelController(ids, { getDefaultCategoryId = () => null, onSaved } = {}) {
+  const form = $(ids.form);
+  const input = $(ids.input);
+  const resolveButton = $(ids.resolveButton);
+  const errorEl = $(ids.errorEl);
+  const pendingPanel = $(ids.pendingPanel);
+  const pendingAvatar = $(ids.pendingAvatar);
+  const pendingName = $(ids.pendingName);
+  const pendingCategories = $(ids.pendingCategories);
+  const confirmButton = $(ids.confirmButton);
+  const cancelButton = $(ids.cancelButton);
+
+  let pendingChannel = null;
+
+  function showPending() {
+    pendingPanel.classList.remove("hidden");
+    pendingAvatar.src = pendingChannel.avatarUrl || "";
+    pendingName.textContent = pendingChannel.name;
+    buildCategoryChecklist(pendingCategories, pendingChannel.selectedCategoryIds, () => {});
+  }
+
+  form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const input = $("channel-url-input");
     const url = input.value.trim();
     if (!url) return;
-    const resolveBtn = $("resolve-button");
-    resolveBtn.disabled = true;
-    resolveBtn.textContent = "Resolving…";
-    $("resolve-error").textContent = "";
+    resolveButton.disabled = true;
+    resolveButton.textContent = "Resolving…";
+    errorEl.textContent = "";
 
     const result = await send("RESOLVE_CHANNEL", { url });
 
-    resolveBtn.disabled = false;
-    resolveBtn.textContent = "Resolve";
+    resolveButton.disabled = false;
+    resolveButton.textContent = "Resolve";
 
     if (result.error) {
-      $("resolve-error").textContent = result.error;
+      errorEl.textContent = result.error;
       return;
     }
 
     const existing = state.config.channels.find((c) => c.channelId === result.channelId);
-    state.pendingChannel = {
+    const selectedCategoryIds = new Set(existing ? existing.categoryIds : []);
+    const defaultCategoryId = getDefaultCategoryId();
+    if (defaultCategoryId) selectedCategoryIds.add(defaultCategoryId);
+
+    pendingChannel = {
       channelId: result.channelId,
       name: result.name,
       avatarUrl: result.avatarUrl,
       sourceUrl: result.sourceUrl,
-      selectedCategoryIds: new Set(existing ? existing.categoryIds : []),
+      selectedCategoryIds,
     };
-    showPendingChannel();
+    showPending();
     input.value = "";
   });
-}
 
-function showPendingChannel() {
-  const panel = $("pending-channel");
-  panel.classList.remove("hidden");
-  $("pending-avatar").src = state.pendingChannel.avatarUrl || "";
-  $("pending-name").textContent = state.pendingChannel.name;
-  buildCategoryChecklist($("pending-categories"), state.pendingChannel.selectedCategoryIds, () => {});
-}
-
-function wirePendingChannelActions() {
-  $("confirm-add-channel").addEventListener("click", async () => {
-    if (!state.pendingChannel) return;
-    const pc = state.pendingChannel;
+  confirmButton.addEventListener("click", async () => {
+    if (!pendingChannel) return;
+    const pc = pendingChannel;
     const result = await send("SAVE_CHANNEL", {
       channel: {
         channelId: pc.channelId,
@@ -304,16 +514,56 @@ function wirePendingChannelActions() {
       },
     });
     state.config = result.config;
-    state.pendingChannel = null;
-    $("pending-channel").classList.add("hidden");
-    renderChannels();
+    pendingChannel = null;
+    pendingPanel.classList.add("hidden");
+    if (onSaved) onSaved(result.config);
     showToast("Channel added");
   });
 
-  $("cancel-add-channel").addEventListener("click", () => {
-    state.pendingChannel = null;
-    $("pending-channel").classList.add("hidden");
+  cancelButton.addEventListener("click", () => {
+    pendingChannel = null;
+    pendingPanel.classList.add("hidden");
   });
+}
+
+function wireAddChannelForms() {
+  createAddChannelController(
+    {
+      form: "add-channel-form",
+      input: "channel-url-input",
+      resolveButton: "resolve-button",
+      errorEl: "resolve-error",
+      pendingPanel: "pending-channel",
+      pendingAvatar: "pending-avatar",
+      pendingName: "pending-name",
+      pendingCategories: "pending-categories",
+      confirmButton: "confirm-add-channel",
+      cancelButton: "cancel-add-channel",
+    },
+    { onSaved: () => renderChannels() }
+  );
+
+  createAddChannelController(
+    {
+      form: "detail-add-channel-form",
+      input: "detail-channel-url-input",
+      resolveButton: "detail-resolve-button",
+      errorEl: "detail-resolve-error",
+      pendingPanel: "detail-pending-channel",
+      pendingAvatar: "detail-pending-avatar",
+      pendingName: "detail-pending-name",
+      pendingCategories: "detail-pending-categories",
+      confirmButton: "detail-confirm-add-channel",
+      cancelButton: "detail-cancel-add-channel",
+    },
+    {
+      getDefaultCategoryId: () => state.currentDetailCategoryId,
+      onSaved: () => {
+        renderChannels();
+        renderCategoryDetail();
+      },
+    }
+  );
 }
 
 function wireChannelSearch() {
@@ -328,6 +578,7 @@ function renderSettings() {
   $("setting-cache-ttl").value = state.settings.cacheTtlMinutes;
   $("setting-videos-limit").value = state.settings.videosPerCategoryLimit;
   $("setting-concurrency").value = state.settings.fetchConcurrency;
+  $("setting-max-columns").value = state.settings.maxVideosPerRow;
 }
 
 function wireSettingsForm() {
@@ -336,6 +587,7 @@ function wireSettingsForm() {
       cacheTtlMinutes: clampNumber($("setting-cache-ttl").value, 5, 1440, 30),
       videosPerCategoryLimit: clampNumber($("setting-videos-limit").value, 1, 500, 60),
       fetchConcurrency: clampNumber($("setting-concurrency").value, 1, 20, 6),
+      maxVideosPerRow: clampNumber($("setting-max-columns").value, 2, 8, 4),
     };
     const result = await send("UPDATE_SETTINGS", { partial });
     state.settings = result.settings;
@@ -347,6 +599,10 @@ function wireSettingsForm() {
 }
 
 function clampNumber(value, min, max, fallback) {
+  // Number("") is 0, not NaN — a cleared field would otherwise clamp to
+  // `min` instead of falling back to the default, which is not what
+  // clearing a field and saving is supposed to do.
+  if (value === "" || value === null || value === undefined) return fallback;
   const n = Number(value);
   if (Number.isNaN(n)) return fallback;
   return Math.min(max, Math.max(min, Math.round(n)));
@@ -511,14 +767,62 @@ async function runConfigImportV2Flow(data) {
 // Modal helpers
 // ---------------------------------------------------------------------------
 
+// Modals are shown/hidden via a plain .hidden class toggle, with no focus
+// management of their own — so Tab/Shift+Tab could still reach (and click)
+// controls in the page behind an "open" modal. `inert` (Firefox 112+, well
+// within this extension's strict_min_version 115.0) is the standard fix:
+// applied to every non-modal top-level container while any modal is open,
+// it makes that whole subtree unfocusable and unclickable, not just
+// visually covered. Reference-counted since import flows can show a
+// progress modal immediately followed by a preview modal.
+const INERT_TARGETS = ["page-header", "list-view", "category-detail-view"];
+let openModalCount = 0;
+let preModalFocusedElement = null;
+
+function showModal(modalEl) {
+  if (openModalCount === 0) {
+    preModalFocusedElement = document.activeElement;
+    for (const id of INERT_TARGETS) {
+      $(id)?.setAttribute("inert", "");
+    }
+  }
+  openModalCount++;
+  modalEl.classList.remove("hidden");
+  // querySelector alone can't tell a genuinely focusable element from one
+  // sitting inside a still-hidden child (e.g. the collision-choice radios,
+  // hidden unless there's an actual collision) — offsetParent === null is a
+  // cheap, reliable "not rendered" check, and .focus() is a no-op on a
+  // hidden element anyway, so skip straight to the first visible one.
+  for (const el of modalEl.querySelectorAll("button, input, [href], [tabindex]")) {
+    if (el.offsetParent !== null) {
+      el.focus();
+      break;
+    }
+  }
+}
+
+function hideModal(modalEl) {
+  modalEl.classList.add("hidden");
+  openModalCount = Math.max(0, openModalCount - 1);
+  if (openModalCount === 0) {
+    for (const id of INERT_TARGETS) {
+      $(id)?.removeAttribute("inert");
+    }
+    if (preModalFocusedElement && document.contains(preModalFocusedElement)) {
+      preModalFocusedElement.focus();
+    }
+    preModalFocusedElement = null;
+  }
+}
+
 function showConfirm(text) {
   return new Promise((resolve) => {
     const modal = $("confirm-dialog");
     $("confirm-dialog-text").textContent = text;
-    modal.classList.remove("hidden");
+    showModal(modal);
 
     const cleanup = (result) => {
-      modal.classList.add("hidden");
+      hideModal(modal);
       yesBtn.removeEventListener("click", onYes);
       noBtn.removeEventListener("click", onNo);
       resolve(result);
@@ -535,10 +839,10 @@ function showConfirm(text) {
 function showImportDialog() {
   return new Promise((resolve) => {
     const modal = $("import-dialog");
-    modal.classList.remove("hidden");
+    showModal(modal);
 
     const cleanup = (result) => {
-      modal.classList.add("hidden");
+      hideModal(modal);
       replaceBtn.removeEventListener("click", onReplace);
       mergeBtn.removeEventListener("click", onMerge);
       cancelBtn.removeEventListener("click", onCancel);
@@ -558,7 +862,7 @@ function showImportDialog() {
 
 function showImportProgress(text) {
   $("import-progress-text").textContent = text;
-  $("import-progress-dialog").classList.remove("hidden");
+  showModal($("import-progress-dialog"));
 }
 
 function setImportProgressText(text) {
@@ -566,7 +870,7 @@ function setImportProgressText(text) {
 }
 
 function hideImportProgress() {
-  $("import-progress-dialog").classList.add("hidden");
+  hideModal($("import-progress-dialog"));
 }
 
 // preview: {categoryName, channels: [{channelId,name,avatarUrl,sourceUrl}], errors: [{identifier,error}]}
@@ -605,10 +909,10 @@ function showCategoryImportPreview(preview, hasCollision) {
     }
 
     const modal = $("import-category-preview-dialog");
-    modal.classList.remove("hidden");
+    showModal(modal);
 
     const cleanup = (result) => {
-      modal.classList.add("hidden");
+      hideModal(modal);
       confirmBtn.removeEventListener("click", onConfirm);
       cancelBtn.removeEventListener("click", onCancel);
       resolve(result);
@@ -637,14 +941,62 @@ function showToast(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Sidebar scroll-spy (ROADMAP.md §B.1) — links are plain anchor jumps
+// (CSS `scroll-behavior: smooth` handles the actual scrolling); this only
+// highlights whichever section is currently in view as the user scrolls.
+// ---------------------------------------------------------------------------
+
+function wireSidebarScrollSpy() {
+  const links = new Map(
+    Array.from(document.querySelectorAll(".sidebar-link")).map((a) => [a.dataset.section, a])
+  );
+  if (links.size === 0) return;
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const link = links.get(entry.target.id);
+        if (!link) continue;
+        links.forEach((l) => l.classList.remove("active"));
+        link.classList.add("active");
+      }
+    },
+    { rootMargin: "-15% 0px -70% 0px", threshold: 0 }
+  );
+
+  for (const id of links.keys()) {
+    const el = $(id);
+    if (el) observer.observe(el);
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 function wireStaticHandlers() {
   wireNewCategoryForm();
-  wireAddChannelForm();
-  wirePendingChannelActions();
+  wireAddChannelForms();
+  wireCategoryDetailHeader();
   wireChannelSearch();
   wireSettingsForm();
   wireExportImport();
+  wireSidebarScrollSpy();
+  wireOpenFeedLink();
+}
+
+// Same reasoning as feed.js's "Manage" link: a real <a href> so
+// middle-click/ctrl-click/"Open in New Tab" still explicitly open a second
+// tab, but a plain left click asks background.js to focus an already-open
+// feed tab instead of piling up duplicates — reloading it first if anything
+// here actually changed since it was last visited, so it doesn't keep
+// showing stale categories/channels/settings.
+function wireOpenFeedLink() {
+  $("open-feed-link").addEventListener("click", (e) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    send("OPEN_OR_FOCUS_FEED", { reloadIfExisting: configChangedSinceLastFeedVisit });
+    configChangedSinceLastFeedVisit = false;
+  });
 }
 
 init();

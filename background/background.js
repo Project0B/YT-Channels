@@ -6,6 +6,7 @@
  */
 
 const FEED_PAGE_PATH = "feed/feed.html";
+const OPTIONS_PAGE_PATH = "options/options.html";
 
 // Export *file* schema version — distinct from Storage.CURRENT_SCHEMA_VERSION
 // (the internal browser.storage.local shape, which is unchanged). Exported
@@ -70,18 +71,20 @@ function channelIdentifier(channel) {
   return `channel/${channel.channelId}`;
 }
 
-function mergeAndSort(videosByChannel, channels, limit) {
+function mergeAndSort(videosByChannel, channels, limit, watched) {
   const channelById = new Map(channels.map((c) => [c.channelId, c]));
   const merged = [];
   for (const [channelId, videos] of videosByChannel.entries()) {
     const channel = channelById.get(channelId);
     if (!channel) continue;
     for (const video of videos) {
+      const progressEntry = watched[video.videoId];
       merged.push({
         ...video,
         channelId,
         channelName: channel.name,
         channelAvatarUrl: channel.avatarUrl,
+        watchProgress: progressEntry ? progressEntry.progress : 0,
       });
     }
   }
@@ -97,6 +100,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
   const config = await Storage.getConfig();
   const settings = await Storage.getSettings();
   const cache = await Storage.getCache();
+  const watched = await Storage.getWatched();
 
   const channels = channelsForCategory(config, categoryId);
   if (channels.length === 0) {
@@ -128,7 +132,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
   }
 
   const postProgress = () => {
-    const videos = mergeAndSort(videosByChannel, channels, settings.videosPerCategoryLimit);
+    const videos = mergeAndSort(videosByChannel, channels, settings.videosPerCategoryLimit, watched);
     port.postMessage({
       type: "CATEGORY_FEED_PARTIAL",
       categoryId,
@@ -175,7 +179,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
     });
   }
 
-  const finalVideos = mergeAndSort(videosByChannel, channels, settings.videosPerCategoryLimit);
+  const finalVideos = mergeAndSort(videosByChannel, channels, settings.videosPerCategoryLimit, watched);
   port.postMessage({
     type: "CATEGORY_FEED_DONE",
     categoryId,
@@ -353,6 +357,23 @@ async function handleMessage(message) {
 
     case "UPDATE_SETTINGS":
       return { settings: await Storage.updateSettings(message.partial) };
+
+    case "TOGGLE_WATCHED":
+      await Storage.setManualWatchedState(message.videoId, Boolean(message.watched));
+      return { ok: true };
+
+    case "UPDATE_WATCH_PROGRESS": {
+      const entry = await Storage.updateWatchProgress(message.videoId, Number(message.progress) || 0);
+      return { ok: true, watchProgress: entry.progress };
+    }
+
+    case "OPEN_OR_FOCUS_FEED":
+      await openOrFocusPage(FEED_PAGE_PATH, { reloadIfExisting: Boolean(message.reloadIfExisting) });
+      return { ok: true };
+
+    case "OPEN_OR_FOCUS_MANAGE":
+      await openOrFocusPage(OPTIONS_PAGE_PATH);
+      return { ok: true };
 
     case "RESOLVE_CHANNEL": {
       try {
@@ -653,20 +674,28 @@ async function commitCategoryImport(categoryName, channels, collisionMode) {
 browser.runtime.onMessage.addListener((message) => handleMessage(message));
 
 // ---------------------------------------------------------------------------
-// Toolbar button: open-or-focus feed.html
+// Open-or-focus: toolbar button, feed page's "Manage" link, Manage page's
+// "Open Feed" link all share this — a page-scoped tab should never
+// accumulate duplicates just because its own link was clicked again.
 // ---------------------------------------------------------------------------
 
-browser.action.onClicked.addListener(async () => {
-  const feedUrl = browser.runtime.getURL(FEED_PAGE_PATH);
+async function openOrFocusPage(pagePath, { reloadIfExisting = false } = {}) {
+  const url = browser.runtime.getURL(pagePath);
   const tabs = await browser.tabs.query({});
-  const existing = tabs.find((t) => t.url && t.url.startsWith(feedUrl));
+  const existing = tabs.find((t) => t.url && t.url.startsWith(url));
   if (existing) {
+    // Reload before focusing, not after — a reload briefly shows the page's
+    // loading state, which reads oddly if it happens right after the tab
+    // already looks focused/settled.
+    if (reloadIfExisting) await browser.tabs.reload(existing.id);
     await browser.tabs.update(existing.id, { active: true });
     await browser.windows.update(existing.windowId, { focused: true });
   } else {
-    await browser.tabs.create({ url: feedUrl });
+    await browser.tabs.create({ url });
   }
-});
+}
+
+browser.action.onClicked.addListener(() => openOrFocusPage(FEED_PAGE_PATH));
 
 // ---------------------------------------------------------------------------
 // Context menu: "Manage Channels"

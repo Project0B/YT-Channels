@@ -38,4 +38,10 @@
  * @property {number} videosPerCategoryLimit
  * @property {string|null} lastViewedCategoryId
  * @property {number} fetchConcurrency
+ *
+ * @typedef {Object} WatchProgress
+ * @property {number} progress - 0-1, maximum playback position reached (or 1 for a manual override).
+ * @property {string} updatedAt - ISO timestamp of the last update.
+ *
+ * @typedef {Object.<string, WatchProgress>} WatchedMap
  */

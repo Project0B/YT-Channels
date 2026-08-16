@@ -143,22 +143,21 @@ async function resolveChannelUrl(inputUrl) {
   // the channel's).
   const isChannelShapedPage = !VIDEO_URL_RE.test(normalized);
 
-  let channelPageHtml = null;
-  try {
-    channelPageHtml = await fetchPage(`https://www.youtube.com/channel/${channelId}`);
-  } catch (e) {
-    // Fall back below to metadata from the originally fetched page, if
-    // that page is actually usable for channel-level metadata.
+  // Only fetch the canonical /channel/{id} page when the original page
+  // *isn't* channel-shaped. A channel-shaped page's own og:title/og:image
+  // already are the channel's — a second fetch there would just double
+  // the latency of every channel add for no benefit.
+  let metadataHtml = html;
+  if (!isChannelShapedPage) {
+    try {
+      metadataHtml = await fetchPage(`https://www.youtube.com/channel/${channelId}`);
+    } catch (e) {
+      metadataHtml = null;
+    }
   }
 
-  const fallbackHtml = isChannelShapedPage ? html : null;
-
-  const name =
-    extractMetaContent(channelPageHtml, "og:title") ||
-    extractMetaContent(fallbackHtml, "og:title") ||
-    "Unknown Channel";
-  const avatarUrl =
-    extractMetaContent(channelPageHtml, "og:image") || extractMetaContent(fallbackHtml, "og:image") || "";
+  const name = extractMetaContent(metadataHtml, "og:title") || "Unknown Channel";
+  const avatarUrl = extractMetaContent(metadataHtml, "og:image") || "";
 
   return { channelId, name, avatarUrl, sourceUrl: normalized };
 }

@@ -8,78 +8,124 @@
 <body>
   <header class="page-header">
     <h1>YT Channels — Manage</h1>
-    <a class="link-button" href="../feed/feed.html" target="_blank" rel="noopener">Open Feed →</a>
+    <a id="open-feed-link" class="link-button" href="../feed/feed.html" target="_blank" rel="noopener">Open Feed →</a>
   </header>
 
-  <main>
-    <section class="card" id="categories-section">
-      <h2>Categories</h2>
-      <ul id="category-list" class="category-list"></ul>
-      <form id="new-category-form" class="inline-form">
-        <input type="text" id="new-category-name" placeholder="New category name" autocomplete="off" />
-        <button type="submit">+ New category</button>
-      </form>
-      <p class="error-text" id="category-error"></p>
-    </section>
+  <div class="manage-layout" id="list-view">
+    <nav class="manage-sidebar" id="manage-sidebar" aria-label="Jump to section">
+      <a href="#categories-section" class="sidebar-link active" data-section="categories-section">Categories</a>
+      <a href="#channels-section" class="sidebar-link" data-section="channels-section">Channels</a>
+      <a href="#settings-section" class="sidebar-link" data-section="settings-section">Settings</a>
+      <a href="#export-import-section" class="sidebar-link" data-section="export-import-section">Export/Import</a>
+    </nav>
 
-    <section class="card" id="channels-section">
-      <h2>Channels</h2>
+    <main>
+      <section class="card" id="categories-section">
+        <h2>Categories</h2>
+        <ul id="category-list" class="category-list"></ul>
+        <form id="new-category-form" class="inline-form">
+          <input type="text" id="new-category-name" placeholder="New category name" autocomplete="off" />
+          <button type="submit">+ New category</button>
+        </form>
+        <p class="error-text" id="category-error"></p>
+      </section>
 
-      <form id="add-channel-form" class="inline-form">
-        <input type="text" id="channel-url-input" placeholder="Paste a YouTube channel or video URL" autocomplete="off" />
-        <button type="submit" id="resolve-button">Resolve</button>
-      </form>
-      <p class="hint-text">First time adding a channel? Visit youtube.com once and accept its cookie prompt, then come back here — YouTube won't show channel pages to a browser that's never accepted cookies.</p>
-      <p class="error-text" id="resolve-error"></p>
+      <section class="card" id="channels-section">
+        <h2>Channels</h2>
 
-      <div id="pending-channel" class="pending-channel hidden">
-        <img id="pending-avatar" alt="" />
-        <div class="pending-info">
-          <div class="pending-name" id="pending-name"></div>
-          <div class="pending-categories" id="pending-categories"></div>
+        <form id="add-channel-form" class="inline-form">
+          <input type="text" id="channel-url-input" placeholder="Paste a YouTube channel or video URL" autocomplete="off" />
+          <button type="submit" id="resolve-button">Resolve</button>
+        </form>
+        <p class="hint-text">First time adding a channel? Visit youtube.com once and accept its cookie prompt, then come back here — YouTube won't show channel pages to a browser that's never accepted cookies.</p>
+        <p class="error-text" id="resolve-error"></p>
+
+        <div id="pending-channel" class="pending-channel hidden">
+          <img id="pending-avatar" alt="" />
+          <div class="pending-info">
+            <div class="pending-name" id="pending-name"></div>
+            <div class="pending-categories" id="pending-categories"></div>
+          </div>
+          <div class="pending-actions">
+            <button id="confirm-add-channel">Add</button>
+            <button id="cancel-add-channel" class="secondary">Cancel</button>
+          </div>
         </div>
-        <div class="pending-actions">
-          <button id="confirm-add-channel">Add</button>
-          <button id="cancel-add-channel" class="secondary">Cancel</button>
+
+        <input type="text" id="channel-search" placeholder="Search channels…" class="search-input" />
+        <ul id="channel-list" class="channel-list"></ul>
+      </section>
+
+      <section class="card" id="settings-section">
+        <h2>Settings</h2>
+        <div class="settings-grid">
+          <label>
+            Refresh videos every (minutes)
+            <input type="number" id="setting-cache-ttl" min="5" max="1440" />
+          </label>
+          <label>
+            Videos shown per category
+            <input type="number" id="setting-videos-limit" min="1" max="500" />
+          </label>
+          <label>
+            Channels updated at once
+            <input type="number" id="setting-concurrency" min="1" max="20" />
+          </label>
+          <label>
+            Max videos per row
+            <input type="number" id="setting-max-columns" min="2" max="8" />
+          </label>
         </div>
-      </div>
+        <button id="save-settings">Save settings</button>
+        <span id="settings-saved" class="saved-text hidden">Saved ✓</span>
+      </section>
 
-      <input type="text" id="channel-search" placeholder="Search channels…" class="search-input" />
-      <ul id="channel-list" class="channel-list"></ul>
-    </section>
+      <section class="card" id="export-import-section">
+        <h2>Export / Import</h2>
+        <div class="export-import-row">
+          <button id="export-config">Export config</button>
+          <label class="file-input-label">
+            Import config
+            <input type="file" id="import-config-file" accept=".txt,.json" hidden />
+          </label>
+        </div>
+        <p class="hint-text">Export saves your categories and channels as <code>yt-channels-config.txt</code>. Import lets you Replace or Merge. To share just one category with someone else, open that category and use its Share button instead.</p>
+      </section>
+    </main>
+  </div>
 
-    <section class="card" id="settings-section">
-      <h2>Settings</h2>
-      <div class="settings-grid">
-        <label>
-          Cache TTL (minutes)
-          <input type="number" id="setting-cache-ttl" min="5" max="1440" />
-        </label>
-        <label>
-          Videos per category
-          <input type="number" id="setting-videos-limit" min="1" max="500" />
-        </label>
-        <label>
-          Fetch concurrency
-          <input type="number" id="setting-concurrency" min="1" max="20" />
-        </label>
-      </div>
-      <button id="save-settings">Save settings</button>
-      <span id="settings-saved" class="saved-text hidden">Saved ✓</span>
-    </section>
+  <div class="card category-detail-view hidden" id="category-detail-view">
+    <button id="category-detail-back" class="link-button back-link">← Categories</button>
 
-    <section class="card" id="export-import-section">
-      <h2>Export / Import</h2>
-      <div class="export-import-row">
-        <button id="export-config">Export config</button>
-        <label class="file-input-label">
-          Import config
-          <input type="file" id="import-config-file" accept=".txt,.json" hidden />
-        </label>
+    <div class="category-detail-header">
+      <span class="category-detail-name" id="category-detail-name"></span>
+      <button id="category-detail-rename" class="icon-button" title="Rename category">✎</button>
+      <div class="category-detail-actions">
+        <button id="category-detail-share" class="secondary">Share</button>
+        <button id="category-detail-delete" class="remove-button">Delete</button>
       </div>
-      <p class="hint-text">Export saves your categories and channels as <code>yt-channels-config.txt</code>. Import lets you Replace or Merge. To share just one category with someone else, use the Share button on that category above instead.</p>
-    </section>
-  </main>
+    </div>
+
+    <form id="detail-add-channel-form" class="inline-form">
+      <input type="text" id="detail-channel-url-input" placeholder="Paste a YouTube channel or video URL" autocomplete="off" />
+      <button type="submit" id="detail-resolve-button">Resolve</button>
+    </form>
+    <p class="error-text" id="detail-resolve-error"></p>
+
+    <div id="detail-pending-channel" class="pending-channel hidden">
+      <img id="detail-pending-avatar" alt="" />
+      <div class="pending-info">
+        <div class="pending-name" id="detail-pending-name"></div>
+        <div class="pending-categories" id="detail-pending-categories"></div>
+      </div>
+      <div class="pending-actions">
+        <button id="detail-confirm-add-channel">Add</button>
+        <button id="detail-cancel-add-channel" class="secondary">Cancel</button>
+      </div>
+    </div>
+
+    <ul id="category-detail-channel-list" class="channel-list"></ul>
+  </div>
 
   <div id="confirm-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-text">
     <div class="modal-box">

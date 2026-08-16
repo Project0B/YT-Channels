@@ -14,6 +14,7 @@
   --warn-text: #7a5c00;
   --warn-border: #f2d675;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --progress-bar: #f03;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -158,38 +159,72 @@ body {
 
 .video-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
   gap: 20px 16px;
-}
-
-@media (min-width: 700px) {
-  .video-grid { grid-template-columns: repeat(3, 1fr); }
-}
-@media (min-width: 1000px) {
-  .video-grid { grid-template-columns: repeat(4, 1fr); }
-}
-@media (min-width: 1300px) {
-  .video-grid { grid-template-columns: repeat(5, 1fr); }
-}
-@media (min-width: 1600px) {
-  .video-grid { grid-template-columns: repeat(6, 1fr); }
+  /* Caps at settings.maxVideosPerRow (--max-columns, set from JS) on wide
+     windows while still shrinking to fewer columns on narrow ones, without
+     fixed breakpoints: each column's minimum width is defined as an even
+     1/max-columns share of the available width, so auto-fill fits exactly
+     that many columns — unless that share would dip below the 220px floor,
+     in which case the floor wins and fewer (wider) columns fit instead. */
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(max(220px, (100% - 16px * (var(--max-columns, 4) - 1)) / var(--max-columns, 4)), 1fr)
+  );
 }
 
 .video-card {
-  display: flex;
-  flex-direction: column;
-  cursor: pointer;
+  position: relative;
   /* Grid items default to min-width: auto, which lets a card's content
      (long channel names/titles) blow out its 1fr track and widen the
      whole grid past the viewport, causing page-level horizontal scroll.
      min-width: 0 lets the card actually shrink to its column share. */
   min-width: 0;
-  border-radius: 12px;
 }
 
-.video-card:focus-visible {
+.video-card-link {
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  min-width: 0;
+  border-radius: 12px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.video-card-link:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
+}
+
+.watched-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.video-card:hover .watched-toggle,
+.video-card:focus-within .watched-toggle,
+.video-card.completed .watched-toggle {
+  opacity: 1;
+}
+.video-card.completed .watched-toggle {
+  background: var(--accent);
+}
+.watched-toggle:hover {
+  background: var(--accent);
 }
 
 .video-thumb-wrap {
@@ -205,6 +240,19 @@ body {
   height: 100%;
   object-fit: cover;
   display: block;
+}
+
+/* Mirrors YouTube's own thumbnail treatment: no dimming, just a thin
+   progress bar along the bottom edge sized to actual playback position
+   reached (SPEC.md §3.5). Width is set inline per-card from stored
+   progress; 0% is simply invisible, no separate hidden state needed. */
+.watch-progress-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--progress-bar);
+  border-radius: 0 2px 2px 0;
 }
 
 .video-meta {

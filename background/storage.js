@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
   CONFIG: "config",
   CACHE: "cache",
   SETTINGS: "settings",
+  WATCHED: "watched",
 };
 
 const CURRENT_SCHEMA_VERSION = 1;
@@ -23,6 +24,7 @@ const DEFAULT_SETTINGS = {
   videosPerCategoryLimit: 60,
   lastViewedCategoryId: null,
   fetchConcurrency: 6,
+  maxVideosPerRow: 4,
 };
 
 function genId(prefix) {
@@ -89,6 +91,60 @@ async function updateSettings(partial) {
   return next;
 }
 
+// Watched state: per-video maximum playback progress reached, keyed by
+// videoId — {videoId: {progress: 0-1, updatedAt: isoString}}. Not part of
+// `config` (never exported/imported/shared — it's purely local viewing
+// history) and not part of `cache` (survives independently of cache entries
+// expiring or a channel's videos rotating out of the RSS window).
+//
+// Legacy shape (pre-progress-tracking installs): {videoId: watchedAtIsoString}.
+// getWatched() normalizes a raw string entry to {progress: 1, updatedAt: entry}
+// at read time so existing viewing history survives the upgrade instead of
+// being silently discarded; storage itself isn't rewritten until that video's
+// entry is next updated.
+async function getWatched() {
+  const result = await browser.storage.local.get(STORAGE_KEYS.WATCHED);
+  const raw = result[STORAGE_KEYS.WATCHED] || {};
+  const normalized = {};
+  for (const [videoId, entry] of Object.entries(raw)) {
+    normalized[videoId] = typeof entry === "string" ? { progress: 1, updatedAt: entry } : entry;
+  }
+  return normalized;
+}
+
+async function setWatchedMap(map) {
+  await browser.storage.local.set({ [STORAGE_KEYS.WATCHED]: map });
+}
+
+// Organic progress report from the watch-page content script. Records the
+// *maximum* progress reached per videoId — scrubbing backward, or reopening
+// a mostly-watched video and bailing early, must never lower a video's
+// recorded progress.
+async function updateWatchProgress(videoId, progress) {
+  const current = await getWatched();
+  const clamped = Math.min(1, Math.max(0, progress));
+  const existing = current[videoId];
+  if (existing && existing.progress >= clamped) return existing;
+  const entry = { progress: clamped, updatedAt: new Date().toISOString() };
+  current[videoId] = entry;
+  await setWatchedMap(current);
+  return entry;
+}
+
+// Manual override from the feed page's corner toggle — explicit user intent
+// ("I watched this elsewhere" / "reset this"), not a progress observation,
+// so unlike updateWatchProgress() above it isn't clamped against the
+// existing value; it replaces it outright.
+async function setManualWatchedState(videoId, watched) {
+  const current = await getWatched();
+  if (watched) {
+    current[videoId] = { progress: 1, updatedAt: new Date().toISOString() };
+  } else {
+    delete current[videoId];
+  }
+  await setWatchedMap(current);
+}
+
 const Storage = {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_CONFIG,
@@ -103,4 +159,7 @@ const Storage = {
   getSettings,
   setSettings,
   updateSettings,
+  getWatched,
+  updateWatchProgress,
+  setManualWatchedState,
 };

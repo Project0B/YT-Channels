@@ -4,6 +4,13 @@
  * INTERFACE_SPEC.md §2).
  */
 
+// A video counts as "done" once real playback progress reaches this
+// fraction — the progress bar caps out at full width here rather than
+// requiring a literal 100.0%, since outros/credits/autoplay-next often mean
+// a video never reports exactly 1.0 even when the viewer is functionally
+// finished. Open assumption, flagged in DECISIONS.md.
+const WATCH_COMPLETE_THRESHOLD = 0.9;
+
 let state = {
   config: { categories: [], channels: [] },
   settings: {},
@@ -37,6 +44,7 @@ async function init() {
   const [{ config }, { settings }] = await Promise.all([send("GET_CONFIG"), send("GET_SETTINGS")]);
   state.config = config;
   state.settings = settings;
+  document.documentElement.style.setProperty("--max-columns", settings.maxVideosPerRow);
 
   const tabs = buildTabs();
   const restored = settings.lastViewedCategoryId;
@@ -47,6 +55,17 @@ async function init() {
 
   $("refresh-button").addEventListener("click", () => loadCategory(state.activeCategoryId, true));
   $("status-banner-dismiss").addEventListener("click", () => hideBanner());
+
+  // A real <a href> (see the video-card links below for the same reasoning)
+  // so middle-click/ctrl-click/right-click "Open in New Tab" still work as
+  // an explicit "yes, a second tab" escape hatch. A plain left click instead
+  // asks background.js to focus an already-open Manage tab rather than
+  // piling up duplicates.
+  $("manage-link").addEventListener("click", (e) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    send("OPEN_OR_FOCUS_MANAGE");
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -309,21 +328,29 @@ function renderVideoGrid(videos) {
   grid.replaceChildren();
   for (const video of videos) {
     const card = document.createElement("div");
-    card.className = "video-card";
-    card.title = video.title;
-    card.tabIndex = 0;
-    card.setAttribute("role", "button");
-    card.setAttribute("aria-label", `Open video: ${video.title}`);
-    const openVideo = () => {
-      window.open(`https://www.youtube.com/watch?v=${video.videoId}`, "_blank", "noopener");
-    };
-    card.addEventListener("click", openVideo);
-    card.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        openVideo();
-      }
-    });
+    const isComplete = () => (video.watchProgress || 0) >= WATCH_COMPLETE_THRESHOLD;
+    card.className = "video-card" + (isComplete() ? " completed" : "");
+
+    // A real <a href> rather than a div+click-handler — that's what makes
+    // native middle-click/right-click-menu/ctrl-or-cmd+click work at all;
+    // window.open() only ever responds to a plain left click. The watched
+    // toggle button below is a *sibling*, not nested inside this anchor
+    // (nesting interactive elements inside <a> is invalid HTML and behaves
+    // inconsistently), positioned over its corner via CSS instead.
+    //
+    // Opening a video no longer marks it watched by itself — that was the
+    // whole problem being fixed (SPEC.md §3.5): a click is "I opened this
+    // tab," not "I watched this." Real progress is now tracked by a content
+    // script on the youtube.com/watch page itself and picked up here the
+    // next time this category's feed is loaded.
+    const videoUrl = `https://www.youtube.com/watch?v=${video.videoId}`;
+    const link = document.createElement("a");
+    link.className = "video-card-link";
+    link.href = videoUrl;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = video.title;
+    link.setAttribute("aria-label", `Open ${video.title}`);
 
     const thumbWrap = document.createElement("div");
     thumbWrap.className = "video-thumb-wrap";
@@ -332,6 +359,32 @@ function renderVideoGrid(videos) {
     thumb.alt = "";
     thumb.loading = "lazy";
     thumbWrap.appendChild(thumb);
+
+    const progressBar = document.createElement("div");
+    progressBar.className = "watch-progress-bar";
+    const displayProgress = isComplete() ? 1 : Math.max(0, Math.min(1, video.watchProgress || 0));
+    progressBar.style.width = `${displayProgress * 100}%`;
+    thumbWrap.appendChild(progressBar);
+
+    // Manual override, not the primary source of truth: "I watched this
+    // elsewhere" (marks fully done) / "reset this" (clears tracked
+    // progress) — actual progress otherwise comes from real playback.
+    const watchedToggle = document.createElement("button");
+    watchedToggle.type = "button";
+    watchedToggle.className = "watched-toggle";
+    const toggleLabel = () => (isComplete() ? "Reset watch progress" : "Mark as watched");
+    watchedToggle.title = toggleLabel();
+    watchedToggle.setAttribute("aria-label", watchedToggle.title);
+    watchedToggle.textContent = "✓";
+    watchedToggle.addEventListener("click", () => {
+      const next = !isComplete();
+      video.watchProgress = next ? 1 : 0;
+      card.classList.toggle("completed", next);
+      progressBar.style.width = `${next ? 100 : 0}%`;
+      watchedToggle.title = toggleLabel();
+      watchedToggle.setAttribute("aria-label", watchedToggle.title);
+      send("TOGGLE_WATCHED", { videoId: video.videoId, watched: next });
+    });
 
     const meta = document.createElement("div");
     meta.className = "video-meta";
@@ -352,7 +405,8 @@ function renderVideoGrid(videos) {
     text.append(title, channelLine);
 
     meta.append(avatar, text);
-    card.append(thumbWrap, meta);
+    link.append(thumbWrap, meta);
+    card.append(link, watchedToggle);
     grid.appendChild(card);
   }
 }
