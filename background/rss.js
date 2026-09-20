@@ -1,8 +1,7 @@
 /**
- * rss.js — derives a channel's long-form uploads feed URL (SPEC.md §5.1),
- * fetches + parses it into Video[], tolerating partial/malformed entries,
- * and falls back to the plain channel feed if the long-form feed fails
- * outright (SPEC.md §7).
+ * rss.js — derives a channel's Uploads feed URLs, fetches + parses them into
+ * Video[] (dropping Shorts, tolerating partial/malformed entries), and picks
+ * which feed a channel is served from.
  */
 
 function longFormFeedUrl(channelId) {
@@ -14,11 +13,21 @@ function plainChannelFeedUrl(channelId) {
   return `https://www.youtube.com/feeds/videos.xml?channel_id=${channelId}`;
 }
 
+// YouTube marks a Short only by its entry link: /shorts/<id> instead of /watch?v=<id>.
+function isShortLink(href) {
+  return /^https?:\/\/[^/]+\/shorts\//i.test(href || "");
+}
+
 /**
  * @param {Element} entry
  * @returns {Video|null}
  */
 function parseEntry(entry) {
+  const link = Array.from(entry.getElementsByTagName("link")).find(
+    (el) => (el.getAttribute("rel") || "alternate") === "alternate"
+  );
+  if (isShortLink(link?.getAttribute("href"))) return null;
+
   const idText = entry.getElementsByTagName("yt:videoId")[0]?.textContent?.trim();
   const rawId = entry.getElementsByTagName("id")[0]?.textContent?.trim() || "";
   const videoId = idText || rawId.replace(/^yt:video:/, "");
@@ -71,6 +80,16 @@ function parseFeedXml(xmlText) {
 
 const FEED_FETCH_TIMEOUT_MS = 15000;
 
+// Feed failures carry a `kind` so callers can tell "no answer at all" from "answered
+// with something unusable": "network" (offline, timeout, reset), "http" (bad status,
+// see `status`) or "parse" (200 but not a readable feed).
+function feedError(message, kind, status) {
+  const err = new Error(message);
+  err.kind = kind;
+  err.status = status;
+  return err;
+}
+
 // Plain fetch() has no timeout of its own. A single stalled connection
 // (flaky network, YouTube not responding) would otherwise hang forever —
 // and since handleGetCategoryFeed in background.js awaits every channel's
@@ -94,8 +113,9 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   } catch (e) {
     clearTimeout(timeoutId);
     if (e.name === "AbortError") {
-      throw new Error("Feed request timed out");
+      throw feedError("Feed request timed out", "network");
     }
+    e.kind = "network";
     throw e;
   }
 }
@@ -103,19 +123,25 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 async function fetchFeed(url) {
   const { response, clearTimer } = await fetchWithTimeout(
     url,
-    { credentials: "omit" },
+    // no-store: our own cache decides freshness; the browser's HTTP cache would answer for up to 15 minutes.
+    { credentials: "omit", cache: "no-store" },
     FEED_FETCH_TIMEOUT_MS
   );
   try {
     if (!response.ok) {
-      throw new Error(`Feed request failed with status ${response.status}`);
+      throw feedError(`Feed request failed with status ${response.status}`, "http", response.status);
     }
     const text = await response.text();
-    return parseFeedXml(text);
+    try {
+      return parseFeedXml(text);
+    } catch (e) {
+      throw feedError(e.message, "parse");
+    }
   } catch (e) {
     if (e.name === "AbortError") {
-      throw new Error("Feed request timed out");
+      throw feedError("Feed request timed out", "network");
     }
+    if (!e.kind) e.kind = "network";
     throw e;
   } finally {
     clearTimer();
@@ -123,25 +149,38 @@ async function fetchFeed(url) {
 }
 
 /**
- * Fetch a channel's uploads, preferring the long-form (Shorts-excluding)
- * playlist feed and falling back to the plain channel feed on outright
- * failure. The fallback is intentionally not silent (SPEC.md §7): callers
- * get `usedFallback: true` so it can be surfaced as a fetch condition
- * rather than reported as an ordinary clean success.
+ * Fetch a channel's videos. The long-form feed is preferred; a 404 there means the
+ * channel has no long-form uploads and is answered from the plain feed. Any other
+ * failure never yields cacheable data: "failed" tells the caller to keep its last good
+ * list, and "stopgap" is a one-off list for a channel that has none.
  * @param {string} channelId
- * @returns {Promise<{videos: Video[], error: string|null, usedFallback: boolean}>}
+ * @param {{hasLastGood?: boolean}} [options]
+ * @returns {Promise<
+ *   {status: "ok", videos: Video[], source: "long-form"|"plain"} |
+ *   {status: "stopgap", videos: Video[], error: string} |
+ *   {status: "failed", error: string}>}
  */
-async function fetchChannelVideos(channelId) {
+async function fetchChannelVideos(channelId, { hasLastGood = false } = {}) {
+  let longFormError;
   try {
     const videos = await fetchFeed(longFormFeedUrl(channelId));
-    return { videos, error: null, usedFallback: false };
-  } catch (longFormError) {
-    try {
-      const videos = await fetchFeed(plainChannelFeedUrl(channelId));
-      return { videos, error: null, usedFallback: true };
-    } catch (plainError) {
-      return { videos: [], error: plainError.message || "Fetch failed", usedFallback: false };
-    }
+    return { status: "ok", videos, source: "long-form" };
+  } catch (e) {
+    longFormError = e;
+  }
+
+  const noLongForm = longFormError.kind === "http" && longFormError.status === 404;
+  // No answer at all means the network is down; a second request would only double the wait.
+  if (longFormError.kind === "network") return { status: "failed", error: longFormError.message };
+  if (!noLongForm && hasLastGood) return { status: "failed", error: longFormError.message };
+
+  try {
+    const videos = await fetchFeed(plainChannelFeedUrl(channelId));
+    return noLongForm
+      ? { status: "ok", videos, source: "plain" }
+      : { status: "stopgap", videos, error: longFormError.message };
+  } catch (plainError) {
+    return { status: "failed", error: (noLongForm ? plainError : longFormError).message || "Fetch failed" };
   }
 }
 

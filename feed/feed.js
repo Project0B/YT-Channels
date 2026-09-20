@@ -196,7 +196,6 @@ function requestCategoryFeed(categoryId, forceRefresh) {
 function finalizeCategory(msg) {
   const channelCount = channelsForCategoryClient(msg.categoryId).length;
   const errorCount = Object.keys(msg.errors || {}).length;
-  const fallbackNames = Object.values(msg.fallbackWarnings || {});
 
   if (msg.videos.length === 0) {
     if (errorCount > 0 && errorCount === channelCount) {
@@ -222,15 +221,8 @@ function finalizeCategory(msg) {
     ).length;
     const base = `${errorCount} channel${errorCount > 1 ? "s" : ""} failed to update`;
     if (failedWithCache === 0) bannerParts.push(`${base} — no cached data`);
-    else if (failedWithCache === errorCount) bannerParts.push(`${base} — showing cached results`);
-    else bannerParts.push(`${base} — showing cached results where available`);
-  }
-  if (fallbackNames.length > 0) {
-    bannerParts.push(
-      `${fallbackNames.join(", ")} used a fallback feed this update — Shorts may briefly reappear for ${
-        fallbackNames.length > 1 ? "them" : "it"
-      }`
-    );
+    else if (failedWithCache === errorCount) bannerParts.push(`${base} — showing older results`);
+    else bannerParts.push(`${base} — showing older results where available`);
   }
   if (bannerParts.length > 0) {
     showBanner(bannerParts.join(" · "));

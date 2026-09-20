@@ -13,6 +13,10 @@ const STORAGE_KEYS = {
 
 const CURRENT_SCHEMA_VERSION = 1;
 
+// Version of `cache` entries. Older entries may hold Shorts and carry no request-start
+// time, so getCache() ignores them and the next cache write drops them.
+const CACHE_ENTRY_VERSION = 2;
+
 const DEFAULT_CONFIG = {
   schemaVersion: CURRENT_SCHEMA_VERSION,
   categories: [],
@@ -58,7 +62,12 @@ async function setConfig(config) {
 
 async function getCache() {
   const result = await browser.storage.local.get(STORAGE_KEYS.CACHE);
-  return result[STORAGE_KEYS.CACHE] || {};
+  const raw = result[STORAGE_KEYS.CACHE] || {};
+  const cache = {};
+  for (const [channelId, entry] of Object.entries(raw)) {
+    if (entry && entry.v === CACHE_ENTRY_VERSION) cache[channelId] = entry;
+  }
+  return cache;
 }
 
 async function setCache(cache) {
@@ -84,6 +93,10 @@ let cacheWriteChain = Promise.resolve();
 
 async function writeCacheEntry(channelId, entry) {
   const cache = await getCache();
+  const current = cache[channelId];
+  // Entries are stamped with when their request started; a slower, older request
+  // must not overwrite a newer result that finished first.
+  if (current && Date.parse(current.fetchedAt) > Date.parse(entry.fetchedAt)) return;
   cache[channelId] = entry;
   await setCache(cache);
 }
@@ -174,6 +187,7 @@ async function setManualWatchedState(videoId, watched) {
 
 const Storage = {
   CURRENT_SCHEMA_VERSION,
+  CACHE_ENTRY_VERSION,
   DEFAULT_CONFIG,
   DEFAULT_SETTINGS,
   genId,

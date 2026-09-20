@@ -134,11 +134,6 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
 
   const videosByChannel = new Map();
   const errors = {};
-  // Channels where the undocumented UULF (Shorts-excluding) feed failed
-  // outright and we fell back to the plain channel feed (SPEC.md §7,
-  // DECISIONS.md) — a real fetch condition, not a silent, ordinary success,
-  // since Shorts may reappear for that channel until UULF works again.
-  const fallbackWarnings = {};
 
   const toFetch = [];
   for (const channel of channels) {
@@ -160,7 +155,6 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
       categoryId,
       videos,
       errors: { ...errors },
-      fallbackWarnings: { ...fallbackWarnings },
     });
   };
 
@@ -172,33 +166,25 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
       // Abandoned mid-flight (port disconnected) — don't start fetches for
       // channels this run hasn't reached yet.
       if (disconnected) return;
-      const result = await Rss.fetchChannelVideos(channel.channelId);
-      const priorEntry = cache[channel.channelId];
+      // Stamped at request start so a slow, older request can't overwrite a newer result.
+      const startedAt = new Date().toISOString();
+      const result = await Rss.fetchChannelVideos(channel.channelId, {
+        hasLastGood: Boolean(cache[channel.channelId]),
+      });
 
-      if (result.error) {
-        errors[channel.channelId] = result.error;
-        // Keep prior cached videos (even stale) as fallback; don't clear them.
-        if (priorEntry) {
-          videosByChannel.set(channel.channelId, priorEntry.videos);
-          await Storage.setCacheEntry(channel.channelId, { ...priorEntry, lastError: result.error });
-        } else {
-          videosByChannel.set(channel.channelId, []);
-          await Storage.setCacheEntry(channel.channelId, {
-            fetchedAt: priorEntry ? priorEntry.fetchedAt : new Date(0).toISOString(),
-            videos: [],
-            lastError: result.error,
-          });
-        }
-      } else {
-        if (result.usedFallback) {
-          fallbackWarnings[channel.channelId] = channel.name;
-        }
+      if (result.status === "ok") {
         videosByChannel.set(channel.channelId, result.videos);
         await Storage.setCacheEntry(channel.channelId, {
-          fetchedAt: new Date().toISOString(),
+          v: Storage.CACHE_ENTRY_VERSION,
+          fetchedAt: startedAt,
+          source: result.source,
           videos: result.videos,
-          lastError: null,
         });
+      } else {
+        // Failures never touch the cache: keep the last good list (already in
+        // videosByChannel) or show a one-off stopgap list for this run only.
+        errors[channel.channelId] = result.error;
+        if (result.status === "stopgap") videosByChannel.set(channel.channelId, result.videos);
       }
       postProgress();
     });
@@ -210,7 +196,6 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
     categoryId,
     videos: finalVideos,
     errors: { ...errors },
-    fallbackWarnings: { ...fallbackWarnings },
   });
 }
 

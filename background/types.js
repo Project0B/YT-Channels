@@ -27,9 +27,10 @@
  * @property {string} publishedAt
  *
  * @typedef {Object} CacheEntry
- * @property {string} fetchedAt
+ * @property {number} v - Storage.CACHE_ENTRY_VERSION; entries without it are ignored.
+ * @property {string} fetchedAt - ISO time the request started (not finished).
+ * @property {"long-form"|"plain"} source - Which Uploads feed the videos came from.
  * @property {Video[]} videos
- * @property {string|null} lastError
  *
  * @typedef {Object.<string, CacheEntry>} Cache
  *
