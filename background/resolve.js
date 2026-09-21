@@ -43,23 +43,38 @@ function decodeHtmlEntities(str) {
     .replace(/&amp;/g, "&");
 }
 
-function extractChannelId(html) {
+// A page that could not be read as the channel it should be (a variant that
+// arrives without the channel's details, say). Marked so that a caller who
+// resolves many channels can try it again on its own later.
+function unreadablePageError(message) {
+  const err = new Error(message);
+  err.retryable = true;
+  return err;
+}
+
+// Which strings on a page name its channel depends on what kind of page it is,
+// and the wrong choice is silent: a channel page carries 15 to 30 other
+// channel ids (recommendations, related channels), and both the first
+// "channelId" in its data and the first UC… string anywhere belong to those
+// neighbours, not to the owner. Only the canonical link, og:url and the single
+// "externalId" name the owner, so a channel page is never read any other way;
+// a page without them is unreadable and yields no channel rather than a wrong
+// one. A video page is the reverse: its canonical link is the video's, and its
+// first "channelId" is the uploader's.
+function extractChannelId(html, { channelPage }) {
   const canonical = html.match(/<link rel="canonical" href="[^"]*\/channel\/(UC[a-zA-Z0-9_-]{22})"/);
   if (canonical) return canonical[1];
 
   const ogUrl = html.match(/<meta property="og:url" content="[^"]*\/channel\/(UC[a-zA-Z0-9_-]{22})"/);
   if (ogUrl) return ogUrl[1];
 
-  const channelIdJson = html.match(/"channelId":"(UC[a-zA-Z0-9_-]{22})"/);
-  if (channelIdJson) return channelIdJson[1];
-
   const externalIdJson = html.match(/"externalId":"(UC[a-zA-Z0-9_-]{22})"/);
   if (externalIdJson) return externalIdJson[1];
 
-  const anyMatch = html.match(CHANNEL_ID_RE);
-  if (anyMatch) return anyMatch[0];
+  if (channelPage) return null;
 
-  return null;
+  const channelIdJson = html.match(/"channelId":"(UC[a-zA-Z0-9_-]{22})"/);
+  return channelIdJson ? channelIdJson[1] : null;
 }
 
 function extractMetaContent(html, property) {
@@ -148,18 +163,6 @@ const VIDEO_URL_RE = /\/watch\?|youtu\.be\/|\/shorts\//i;
 async function resolveChannelUrl(inputUrl) {
   const normalized = normalizeInputUrl(inputUrl);
 
-  let html;
-  try {
-    html = await fetchPage(normalized);
-  } catch (e) {
-    throw new Error(e.message || "Couldn't find a channel at that URL");
-  }
-
-  const channelId = extractChannelId(html);
-  if (!channelId) {
-    throw new Error("Couldn't determine the channel for that URL");
-  }
-
   // The originally fetched page is only a valid source of *channel* name/
   // avatar metadata if it was itself a channel-shaped page. For a video
   // URL, its og:title/og:image are the video's, not the channel's — using
@@ -167,6 +170,18 @@ async function resolveChannelUrl(inputUrl) {
   // actual bug: a video link would save the video's own thumbnail/title as
   // the channel's).
   const isChannelShapedPage = !VIDEO_URL_RE.test(normalized);
+
+  let html;
+  try {
+    html = await fetchPage(normalized);
+  } catch (e) {
+    throw new Error(e.message || "Couldn't find a channel at that URL");
+  }
+
+  const channelId = extractChannelId(html, { channelPage: isChannelShapedPage });
+  if (!channelId) {
+    throw unreadablePageError("Couldn't determine the channel for that URL");
+  }
 
   // Only fetch the canonical /channel/{id} page when the original page
   // *isn't* channel-shaped. A channel-shaped page's own og:title/og:image
@@ -181,7 +196,13 @@ async function resolveChannelUrl(inputUrl) {
     }
   }
 
-  const name = extractMetaContent(metadataHtml, "og:title") || "Unknown Channel";
+  // A channel is never saved without its name: an unnamed entry looks like a
+  // success and is hard to tell from a real one. The caller reports it, or
+  // tries it again.
+  const name = extractMetaContent(metadataHtml, "og:title");
+  if (!name) {
+    throw unreadablePageError("YouTube returned that channel's page without its details — try again in a moment");
+  }
   const avatarUrl = extractMetaContent(metadataHtml, "og:image") || "";
 
   return { channelId, name, avatarUrl, sourceUrl: normalized };

@@ -239,20 +239,42 @@ browser.runtime.onConnect.addListener((port) => {
 // network operation instead of an instant local file read.
 // ---------------------------------------------------------------------------
 
+// A page that comes back without its channel's details is usually a passing
+// glitch when many pages are fetched at once, so those are tried once more,
+// one at a time and a little apart, after the concurrent pass.
+const IMPORT_RETRY_SPACING_MS = 400;
+
 async function resolveIdentifiers(identifiers, settings, port) {
   const results = new Array(identifiers.length).fill(null);
-  const errors = [];
+  const failed = [];
   let resolvedCount = 0;
 
   await runWithConcurrency(identifiers, settings.fetchConcurrency, async (identifier, index) => {
     try {
       results[index] = await Resolve.resolveChannelUrl(identifier);
     } catch (err) {
-      errors.push({ identifier, error: err.message || "Couldn't resolve" });
+      failed.push({ identifier, index, err });
     }
     resolvedCount++;
     port.postMessage({ type: "IMPORT_PROGRESS", resolved: resolvedCount, total: identifiers.length });
   });
+
+  const errors = [];
+  for (const { identifier, index, err } of failed) {
+    let last = err;
+    if (err.retryable) {
+      await new Promise((resolve) => setTimeout(resolve, IMPORT_RETRY_SPACING_MS));
+      try {
+        results[index] = await Resolve.resolveChannelUrl(identifier);
+        last = null;
+      } catch (retryErr) {
+        last = retryErr;
+      }
+      // Also keeps a service worker awake through a long retry pass.
+      port.postMessage({ type: "IMPORT_PROGRESS", resolved: resolvedCount, total: identifiers.length });
+    }
+    if (last) errors.push({ identifier, error: last.message || "Couldn't resolve" });
+  }
 
   return { results, errors };
 }
