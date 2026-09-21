@@ -43,7 +43,7 @@
   },
   "permissions": [
     "storage",
-    "menus"
+    "contextMenus"
   ],
   "host_permissions": [
     "*://www.youtube.com/*",

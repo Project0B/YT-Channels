@@ -729,23 +729,24 @@ browser.action.onClicked.addListener(() => openOrFocusPage(FEED_PAGE_PATH));
 // ---------------------------------------------------------------------------
 
 // Re-registered on every background script activation (not just install),
-// since Firefox's event page can suspend and restart without onInstalled
-// firing again — a create-only-on-install approach would silently lose the
-// menu item after a suspend/wake cycle.
+// since the background can be suspended and restarted (Firefox's event page,
+// Chrome's service worker) without onInstalled firing again — a
+// create-only-on-install approach would silently lose the menu item after a
+// suspend/wake cycle.
 (async () => {
   try {
-    await browser.menus.removeAll();
+    await browser.contextMenus.removeAll();
   } catch (e) {
     // No-op on first-ever run.
   }
-  browser.menus.create({
+  browser.contextMenus.create({
     id: "manage-channels",
     title: "Manage Channels",
     contexts: ["action"],
   });
 })();
 
-browser.menus.onClicked.addListener((info) => {
+browser.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === "manage-channels") {
     browser.runtime.openOptionsPage();
   }
