@@ -721,6 +721,17 @@ function resolveOverPort(requestType, data, previewType) {
   });
 }
 
+// When nothing could be resolved, say why if every failure has the same
+// reason: a browser that has never accepted YouTube's cookie prompt fails
+// every channel in the same way, and "nothing could be resolved" alone gives
+// no hint what to do.
+function nothingResolvedMessage(errors) {
+  const reasons = [...new Set(errors.map((e) => e.error))];
+  return reasons.length === 1
+    ? `Nothing in that file could be resolved: ${reasons[0]}`
+    : "Nothing in that file could be resolved";
+}
+
 async function runCategoryImportFlow(data) {
   const preview = await resolveOverPort("RESOLVE_CATEGORY_IMPORT", data, "IMPORT_PREVIEW_CATEGORY");
   if (!preview.ok) {
@@ -728,7 +739,7 @@ async function runCategoryImportFlow(data) {
     return;
   }
   if (preview.channels.length === 0) {
-    showToast("Nothing in that file could be resolved");
+    showToast(nothingResolvedMessage(preview.errors), 9000);
     return;
   }
 
@@ -757,7 +768,7 @@ async function runConfigImportV2Flow(data) {
     return;
   }
   if (preview.channels.length === 0) {
-    showToast("Nothing in that file could be resolved");
+    showToast(nothingResolvedMessage(preview.errors), 9000);
     return;
   }
 
@@ -949,12 +960,12 @@ function showCategoryImportPreview(preview, hasCollision) {
 }
 
 let toastTimer = null;
-function showToast(text) {
+function showToast(text, durationMs = 2500) {
   const toast = $("toast");
   toast.textContent = text;
   toast.classList.remove("hidden");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.add("hidden"), 2500);
+  toastTimer = setTimeout(() => toast.classList.add("hidden"), durationMs);
 }
 
 // ---------------------------------------------------------------------------

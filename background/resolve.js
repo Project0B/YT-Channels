@@ -115,6 +115,28 @@ async function fetchPageWithTimeout(url, options, timeoutMs) {
   }
 }
 
+const CONSENT_WALL_MESSAGE =
+  "YouTube is asking for cookie consent before showing this page. Visit youtube.com in a regular tab, accept the cookie prompt, then try again.";
+
+// A browser that has never accepted YouTube's cookie prompt is redirected to
+// consent.youtube.com, which the extension has no access to, so fetch() only
+// reports a bare network error ("Failed to fetch"). Asking again without
+// following redirects tells that apart from being offline: a redirect comes
+// back as an "opaqueredirect" response, while being offline fails again.
+async function redirectsElsewhere(url) {
+  try {
+    const { response, clearTimer } = await fetchPageWithTimeout(
+      url,
+      { credentials: "include", redirect: "manual" },
+      PAGE_FETCH_TIMEOUT_MS
+    );
+    clearTimer();
+    return response.type === "opaqueredirect";
+  } catch (e) {
+    return false;
+  }
+}
+
 async function fetchPage(url) {
   // credentials: "include" — without it, cross-origin fetches from the
   // background script never carry youtube.com's cookies, and YouTube's
@@ -123,20 +145,23 @@ async function fetchPage(url) {
   // requests. Including credentials lets the user's normal youtube.com
   // session (e.g. an already-accepted CONSENT cookie) through, which is
   // what makes channel-page resolution work at all.
-  const { response, clearTimer } = await fetchPageWithTimeout(
-    url,
-    { credentials: "include" },
-    PAGE_FETCH_TIMEOUT_MS
-  );
+  let fetched;
+  try {
+    fetched = await fetchPageWithTimeout(url, { credentials: "include" }, PAGE_FETCH_TIMEOUT_MS);
+  } catch (e) {
+    if (e.message !== "Request timed out" && (await redirectsElsewhere(url))) {
+      throw new Error(CONSENT_WALL_MESSAGE);
+    }
+    throw e;
+  }
+  const { response, clearTimer } = fetched;
   try {
     if (!response.ok) {
       throw new Error("Couldn't find a channel at that URL");
     }
     const html = await response.text();
     if (isConsentWallPage(html)) {
-      throw new Error(
-        "YouTube is asking for cookie consent before showing this page. Visit youtube.com in a regular tab, accept the cookie prompt, then try again."
-      );
+      throw new Error(CONSENT_WALL_MESSAGE);
     }
     return html;
   } catch (e) {
