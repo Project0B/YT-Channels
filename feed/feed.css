@@ -49,6 +49,17 @@ body {
   overflow-x: hidden;
 }
 
+/* Inline SVG icons (common/icons.js): sized by font-size, coloured by text colour. */
+[data-icon] {
+  display: inline-flex;
+}
+.icon {
+  display: block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+}
+
 .header-bar {
   display: flex;
   align-items: center;
@@ -145,11 +156,13 @@ body {
 }
 
 .banner-dismiss {
+  display: inline-flex;
+  align-items: center;
   background: none;
   border: none;
   color: var(--warn-text);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 16px;
   padding: 0 4px;
 }
 

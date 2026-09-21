@@ -10,9 +10,11 @@ YouTube subscriptions give you one giant undifferentiated feed, and playlists do
 
 - Organize channels into as many categories as you want; a channel can belong to more than one.
 - One click opens (or refocuses) a single feed tab with category tabs across the top and a responsive video grid below.
-- Shorts are excluded automatically — you only see regular uploads.
+- Shorts are excluded automatically — you only see regular uploads, and a failed update never brings Shorts back or replaces your last good list.
 - Feeds are fetched only for the category you actually open, not all your channels at once, and are cached locally so switching back is instant.
-- Fully local: no account, no cloud sync, no telemetry. Your categories and channel list can be exported to a plain text/JSON file and re-imported on another machine whenever you want.
+- A progress bar on each video shows how far you've watched it (tracked while you watch on youtube.com in this browser), and a corner button marks a video as watched or resets it.
+- Open a category in the Manage page to see and edit its channels, or share just that category with someone else as a small file.
+- Fully local: no account, no cloud sync, no telemetry. Your categories and channel list can be exported to a plain text/JSON file and re-imported on another machine whenever you want; imports show a preview before anything is saved.
 
 No API key, no setup beyond installing and adding channels.
 
@@ -24,9 +26,9 @@ No API key, no setup beyond installing and adding channels.
 ## Known limitations
 
 - YouTube's RSS feeds cap at the 15 most recent uploads per channel — a channel that posts more than 15 times between visits will show gaps, not a full history.
-- Live streams/premieres are currently excluded alongside Shorts, as a side effect of the feed used to filter Shorts out.
-- Firefox for Android and Chrome/Edge are not supported or tested.
-- No watched/read-state tracking, cloud sync, or automatic background notifications in this version.
+- Live streams/premieres don't show up for channels that also have regular uploads, as a side effect of the feed used to filter Shorts out. Channels with no regular uploads at all show their streams instead, and channels that only post Shorts show nothing.
+- Watch progress is only recorded for videos you watch in this browser. There is no cloud sync or automatic background notifications in this version.
+- Requires Firefox 140 or newer. Firefox for Android and Chrome/Edge are not supported or tested.
 
 ## Reporting bugs
 

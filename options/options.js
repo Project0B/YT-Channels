@@ -7,6 +7,7 @@ let state = {
   config: { schemaVersion: 1, categories: [], channels: [] },
   settings: {},
   currentDetailCategoryId: null, // set while the category detail view (ROADMAP.md §B.2) is open
+  noVideoChannelIds: new Set(), // channels with no long-form uploads and nothing but Shorts
 };
 
 // Message types that can change what the feed page would render (config or
@@ -45,9 +46,14 @@ function $(id) {
 // ---------------------------------------------------------------------------
 
 async function init() {
-  const [{ config }, { settings }] = await Promise.all([send("GET_CONFIG"), send("GET_SETTINGS")]);
+  const [{ config }, { settings }, { channelIds }] = await Promise.all([
+    send("GET_CONFIG"),
+    send("GET_SETTINGS"),
+    send("GET_EMPTY_CHANNELS"),
+  ]);
   state.config = config;
   state.settings = settings;
+  state.noVideoChannelIds = new Set(channelIds);
   renderCategories();
   renderChannels();
   renderSettings();
@@ -79,7 +85,8 @@ function renderCategories() {
     const renameBtn = document.createElement("button");
     renameBtn.className = "icon-button";
     renameBtn.title = "Rename category";
-    renameBtn.textContent = "✎";
+    renameBtn.setAttribute("aria-label", `Rename ${cat.name}`);
+    renameBtn.appendChild(createIcon("pencil"));
     renameBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       startRenameCategory(li, cat);
@@ -88,14 +95,18 @@ function renderCategories() {
     const reorder = document.createElement("div");
     reorder.className = "reorder-buttons";
     const upBtn = document.createElement("button");
-    upBtn.textContent = "▲";
+    upBtn.title = "Move up";
+    upBtn.setAttribute("aria-label", `Move ${cat.name} up`);
+    upBtn.appendChild(createIcon("chevron-up"));
     upBtn.disabled = idx === 0;
     upBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       moveCategory(sorted, idx, -1);
     });
     const downBtn = document.createElement("button");
-    downBtn.textContent = "▼";
+    downBtn.title = "Move down";
+    downBtn.setAttribute("aria-label", `Move ${cat.name} down`);
+    downBtn.appendChild(createIcon("chevron-down"));
     downBtn.disabled = idx === sorted.length - 1;
     downBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -273,7 +284,7 @@ function renderCategoryDetail() {
     const nameDiv = document.createElement("div");
     nameDiv.className = "channel-name";
     nameDiv.textContent = channel.name;
-    info.append(nameDiv);
+    info.append(nameDiv, ...channelNote(channel));
 
     const removeBtn = document.createElement("button");
     removeBtn.className = "remove-button";
@@ -385,12 +396,20 @@ function buildCategoryChecklist(container, selectedIds, onToggle) {
   }
 }
 
+function channelNote(channel) {
+  if (!state.noVideoChannelIds.has(channel.channelId)) return [];
+  const note = document.createElement("div");
+  note.className = "channel-note";
+  note.textContent = "No long-form videos to show";
+  note.title = "This channel has no regular videos (only Shorts, or nothing), so it adds nothing to your feeds.";
+  return [note];
+}
+
 function renderChannels() {
   const list = $("channel-list");
   const query = ($("channel-search").value || "").toLowerCase().trim();
   list.replaceChildren();
 
-  const categoryById = new Map(state.config.categories.map((c) => [c.id, c]));
   const filtered = state.config.channels
     .filter((ch) => !query || ch.name.toLowerCase().includes(query))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -410,7 +429,7 @@ function renderChannels() {
     nameDiv.textContent = channel.name;
     const chipsDiv = document.createElement("div");
     chipsDiv.className = "category-tags";
-    info.append(nameDiv, chipsDiv);
+    info.append(nameDiv, ...channelNote(channel), chipsDiv);
 
     const selectedIds = new Set(channel.categoryIds);
     buildCategoryChecklist(chipsDiv, selectedIds, async () => {
@@ -435,8 +454,6 @@ function renderChannels() {
     li.append(img, info, removeBtn);
     list.appendChild(li);
   }
-
-  void categoryById; // reserved for future use (e.g. sort-by-category)
 }
 
 // Reusable resolve → pending-preview → confirm add-channel flow, shared by
@@ -770,7 +787,7 @@ async function runConfigImportV2Flow(data) {
 // Modals are shown/hidden via a plain .hidden class toggle, with no focus
 // management of their own — so Tab/Shift+Tab could still reach (and click)
 // controls in the page behind an "open" modal. `inert` (Firefox 112+, well
-// within this extension's strict_min_version 115.0) is the standard fix:
+// within this extension's strict_min_version) is the standard fix:
 // applied to every non-modal top-level container while any modal is open,
 // it makes that whole subtree unfocusable and unclickable, not just
 // visually covered. Reference-counted since import flows can show a

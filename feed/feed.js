@@ -56,16 +56,18 @@ async function init() {
   $("refresh-button").addEventListener("click", () => loadCategory(state.activeCategoryId, true));
   $("status-banner-dismiss").addEventListener("click", () => hideBanner());
 
-  // A real <a href> (see the video-card links below for the same reasoning)
-  // so middle-click/ctrl-click/right-click "Open in New Tab" still work as
-  // an explicit "yes, a second tab" escape hatch. A plain left click instead
-  // asks background.js to focus an already-open Manage tab rather than
-  // piling up duplicates.
-  $("manage-link").addEventListener("click", (e) => {
-    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    e.preventDefault();
-    send("OPEN_OR_FOCUS_MANAGE");
-  });
+  $("manage-link").addEventListener("click", focusManageOnPlainClick);
+}
+
+// A real <a href> (see the video-card links below for the same reasoning)
+// so middle-click/ctrl-click/right-click "Open in New Tab" still work as
+// an explicit "yes, a second tab" escape hatch. A plain left click instead
+// asks background.js to focus an already-open Manage tab rather than
+// piling up duplicates.
+function focusManageOnPlainClick(e) {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  send("OPEN_OR_FOCUS_MANAGE");
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +256,7 @@ function setEmptyState({ message, action }) {
     a.target = "_blank";
     a.rel = "noopener";
     a.textContent = action.label;
+    a.addEventListener("click", focusManageOnPlainClick);
     children.push(a);
   } else if (action?.type === "button") {
     const btn = document.createElement("button");
@@ -367,7 +370,7 @@ function renderVideoGrid(videos) {
     const toggleLabel = () => (isComplete() ? "Reset watch progress" : "Mark as watched");
     watchedToggle.title = toggleLabel();
     watchedToggle.setAttribute("aria-label", watchedToggle.title);
-    watchedToggle.textContent = "✓";
+    watchedToggle.appendChild(createIcon("check"));
     watchedToggle.addEventListener("click", () => {
       const next = !isComplete();
       video.watchProgress = next ? 1 : 0;

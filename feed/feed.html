@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <title>YT Channels</title>
-  <link rel="icon" href="../icons/icon-48.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="../icons/icon-16.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="../icons/icon-32.png" />
+  <link rel="icon" type="image/png" sizes="48x48" href="../icons/icon-48.png" />
   <link rel="stylesheet" href="feed.css" />
 </head>
 <body>
@@ -12,7 +14,7 @@
     <div class="header-actions">
       <a id="manage-link" class="header-link" href="../options/options.html" target="_blank" rel="noopener">Manage</a>
       <button id="refresh-button" class="refresh-button">
-        <span class="refresh-icon">⟳</span> Refresh
+        <span class="refresh-icon" data-icon="rotate-cw"></span> Refresh
       </button>
     </div>
   </header>
@@ -21,7 +23,7 @@
 
   <div id="status-banner" class="status-banner hidden">
     <span id="status-banner-text"></span>
-    <button id="status-banner-dismiss" class="banner-dismiss">✕</button>
+    <button id="status-banner-dismiss" class="banner-dismiss" type="button" aria-label="Dismiss" title="Dismiss"><span data-icon="x"></span></button>
   </div>
 
   <main id="content-area" class="content-area">
@@ -29,6 +31,7 @@
     <div id="empty-state" class="empty-state hidden"></div>
   </main>
 
+  <script src="../common/icons.js"></script>
   <script src="feed.js"></script>
 </body>
 </html>

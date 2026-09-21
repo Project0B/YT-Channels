@@ -158,6 +158,8 @@
       lastPolledUrl = location.href;
       startTracking();
     }
+    // Off a watch page there is nothing to attach to, so skip the DOM queries.
+    if (!currentVideoId) return;
     const video = getVideoEl();
     if (video) attachVideoListeners(video);
     if (!adObserver && getPlayerEl()) startAdWatcher();

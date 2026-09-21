@@ -3,13 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <title>Manage Channels — YT Channels</title>
-  <link rel="icon" href="../icons/icon-48.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="../icons/icon-16.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="../icons/icon-32.png" />
+  <link rel="icon" type="image/png" sizes="48x48" href="../icons/icon-48.png" />
   <link rel="stylesheet" href="options.css" />
 </head>
 <body>
   <header class="page-header">
     <h1>YT Channels — Manage</h1>
-    <a id="open-feed-link" class="link-button" href="../feed/feed.html" target="_blank" rel="noopener">Open Feed →</a>
+    <a id="open-feed-link" class="link-button" href="../feed/feed.html" target="_blank" rel="noopener">Open Feed <span data-icon="arrow-right"></span></a>
   </header>
 
   <div class="manage-layout" id="list-view">
@@ -61,7 +63,7 @@
         <h2>Settings</h2>
         <div class="settings-grid">
           <label>
-            Refresh videos every (minutes)
+            Keep videos fresh for (minutes)
             <input type="number" id="setting-cache-ttl" min="5" max="1440" />
           </label>
           <label>
@@ -78,7 +80,7 @@
           </label>
         </div>
         <button id="save-settings">Save settings</button>
-        <span id="settings-saved" class="saved-text hidden">Saved ✓</span>
+        <span id="settings-saved" class="saved-text hidden">Saved <span data-icon="check"></span></span>
       </section>
 
       <section class="card" id="export-import-section">
@@ -96,11 +98,11 @@
   </div>
 
   <div class="card category-detail-view hidden" id="category-detail-view">
-    <button id="category-detail-back" class="link-button back-link">← Categories</button>
+    <button id="category-detail-back" class="link-button back-link"><span data-icon="arrow-left"></span> Categories</button>
 
     <div class="category-detail-header">
       <span class="category-detail-name" id="category-detail-name"></span>
-      <button id="category-detail-rename" class="icon-button" title="Rename category">✎</button>
+      <button id="category-detail-rename" class="icon-button" title="Rename category" aria-label="Rename category"><span data-icon="pencil"></span></button>
       <div class="category-detail-actions">
         <button id="category-detail-share" class="secondary">Share</button>
         <button id="category-detail-delete" class="remove-button">Delete</button>
@@ -175,6 +177,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="../common/icons.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

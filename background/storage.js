@@ -101,13 +101,26 @@ async function writeCacheEntry(channelId, entry) {
   await setCache(cache);
 }
 
-function setCacheEntry(channelId, entry) {
-  const task = cacheWriteChain.then(
-    () => writeCacheEntry(channelId, entry),
-    () => writeCacheEntry(channelId, entry)
-  );
+function enqueueCacheWrite(job) {
+  const task = cacheWriteChain.then(job, job);
   cacheWriteChain = task.catch(() => {});
   return task;
+}
+
+function setCacheEntry(channelId, entry) {
+  return enqueueCacheWrite(() => writeCacheEntry(channelId, entry));
+}
+
+// Drops the cache entries of channels that are no longer in the config.
+function retainCacheFor(channelIds) {
+  const keep = new Set(channelIds);
+  return enqueueCacheWrite(async () => {
+    const cache = await getCache();
+    const stale = Object.keys(cache).filter((id) => !keep.has(id));
+    if (stale.length === 0) return;
+    for (const id of stale) delete cache[id];
+    await setCache(cache);
+  });
 }
 
 async function getSettings() {
@@ -156,6 +169,28 @@ async function setWatchedMap(map) {
   await browser.storage.local.set({ [STORAGE_KEYS.WATCHED]: map });
 }
 
+// Watched entries are tiny but never expire, and the whole map is rewritten on every
+// progress report. Once it is large, drop entries that are old and no longer in any
+// cached feed — only a video still listed in a feed can show its progress bar.
+const WATCHED_PRUNE_ABOVE = 1500;
+const WATCHED_KEEP_MS = 180 * 24 * 60 * 60 * 1000;
+const WATCHED_PRUNE_EVERY_MS = 60 * 60 * 1000;
+let lastWatchedPrune = 0;
+
+async function pruneWatched(map) {
+  if (Object.keys(map).length <= WATCHED_PRUNE_ABOVE) return;
+  if (Date.now() - lastWatchedPrune < WATCHED_PRUNE_EVERY_MS) return;
+  lastWatchedPrune = Date.now();
+  const listed = new Set();
+  for (const entry of Object.values(await getCache())) {
+    for (const video of entry.videos) listed.add(video.videoId);
+  }
+  const cutoff = Date.now() - WATCHED_KEEP_MS;
+  for (const [videoId, entry] of Object.entries(map)) {
+    if (!listed.has(videoId) && Date.parse(entry.updatedAt) < cutoff) delete map[videoId];
+  }
+}
+
 // Organic progress report from the watch-page content script. Records the
 // *maximum* progress reached per videoId — scrubbing backward, or reopening
 // a mostly-watched video and bailing early, must never lower a video's
@@ -167,6 +202,7 @@ async function updateWatchProgress(videoId, progress) {
   if (existing && existing.progress >= clamped) return existing;
   const entry = { progress: clamped, updatedAt: new Date().toISOString() };
   current[videoId] = entry;
+  await pruneWatched(current);
   await setWatchedMap(current);
   return entry;
 }
@@ -197,6 +233,7 @@ const Storage = {
   setCache,
   getCacheEntry,
   setCacheEntry,
+  retainCacheFor,
   getSettings,
   setSettings,
   updateSettings,

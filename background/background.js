@@ -374,6 +374,15 @@ async function handleMessage(message) {
     case "UPDATE_SETTINGS":
       return { settings: await Storage.updateSettings(message.partial) };
 
+    // Channels whose Long-form feed doesn't exist and whose Plain feed holds only Shorts.
+    case "GET_EMPTY_CHANNELS": {
+      const cache = await Storage.getCache();
+      const channelIds = Object.entries(cache)
+        .filter(([, entry]) => entry.source === "plain" && entry.videos.length === 0)
+        .map(([channelId]) => channelId);
+      return { channelIds };
+    }
+
     case "TOGGLE_WATCHED":
       await Storage.setManualWatchedState(message.videoId, Boolean(message.watched));
       return { ok: true };
@@ -434,6 +443,7 @@ async function handleMessage(message) {
       const config = await Storage.getConfig();
       config.channels = config.channels.filter((c) => c.channelId !== message.channelId);
       await Storage.setConfig(config);
+      await Storage.retainCacheFor(config.channels.map((c) => c.channelId));
       return { config };
     }
 
@@ -602,6 +612,7 @@ async function importConfig(data, mode) {
       channels: data.channels,
     };
     await Storage.setConfig(config);
+    await Storage.retainCacheFor(config.channels.map((c) => c.channelId));
     return { config };
   }
 
