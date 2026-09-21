@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 import {
   PackageError,
+  RUNTIME_PATHS,
+  USAGE,
   applyOverlay,
+  buildDev,
+  buildRelease,
   checkTargetKeys,
   chromiumManifest,
   duplicateTopLevelNames,
+  main,
   manifestFiles,
   readZip,
   workerEntry,
@@ -223,4 +233,256 @@ test("readZip refuses data that is not a zip, a damaged directory and an unsuppo
   damaged[damaged.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]))] = 0;
   assert.throws(() => readZip(damaged), /corrupt zip/);
   assert.throws(() => readZip(makeZip([["a.txt", "hi", 12]])), /unsupported zip compression method 12/);
+});
+
+// ---------------------------------------------------------------------------
+// Integration tests: each one builds a small throwaway git repository in the OS temp folder, so
+// none of them depends on the state of the real repository.
+// ---------------------------------------------------------------------------
+
+const FIXTURE_MANIFEST = {
+  manifest_version: 3,
+  name: "Fixture",
+  version: "1.0.0",
+  icons: { 16: "icons/icon-16.png" },
+  background: { scripts: ["background/a.js", "background/b.js"] },
+  content_scripts: [{ matches: ["*://www.example.com/*"], js: ["content/watch.js"] }],
+  action: { default_icon: { 16: "icons/icon-16.png" } },
+  options_ui: { page: "options/options.html" },
+  permissions: ["storage", "menus"],
+  browser_specific_settings: { gecko: { id: "fixture@example.com" } },
+};
+const FIXTURE_OVERLAY = {
+  background: { scripts: null, service_worker: "background/service-worker.js" },
+  browser_specific_settings: null,
+  minimum_chrome_version: "148",
+};
+
+const git = (cwd, ...args) =>
+  execFileSync(
+    "git",
+    ["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", ...args],
+    { cwd, stdio: ["ignore", "pipe", "pipe"] }
+  );
+
+/** Commits a small extension tree and returns its folder. `change` may edit the files first; a null content skips the file. */
+function makeRepo(change = () => {}) {
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "yt-package-test-"));
+  const files = {
+    "manifest.json": JSON.stringify(FIXTURE_MANIFEST, null, 2) + "\n",
+    "tools/chromium-overlay.json": JSON.stringify(FIXTURE_OVERLAY, null, 2) + "\n",
+    "background/a.js": "const A = 1;\n",
+    "background/b.js": "function b() {\n  return 2;\n}\n",
+    "common/c.js": "// shared\n",
+    "content/watch.js": "// content script\n",
+    "feed/feed.html": "<!doctype html>\n",
+    "icons/icon-16.png": Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x0d, 0x0a]),
+    "options/options.html": "<!doctype html>\n",
+    "LICENSE.txt": "licence text\n",
+    "README.md": "not part of any package\n",
+  };
+  change(files);
+  for (const [name, content] of Object.entries(files)) {
+    if (content === null) continue;
+    fs.mkdirSync(path.dirname(path.join(repoRoot, name)), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, name), content);
+  }
+  git(repoRoot, "init", "-q");
+  git(repoRoot, "add", "-A");
+  git(repoRoot, "commit", "-q", "-m", "fixture");
+  return repoRoot;
+}
+
+const PACKAGE_FILES = [
+  "LICENSE.txt",
+  "background/a.js",
+  "background/b.js",
+  "common/c.js",
+  "content/watch.js",
+  "feed/feed.html",
+  "icons/icon-16.png",
+  "manifest.json",
+  "options/options.html",
+];
+const zipFiles = (zipPath) => readZip(fs.readFileSync(zipPath));
+const distFiles = (repoRoot) => (fs.existsSync(path.join(repoRoot, "dist")) ? fs.readdirSync(path.join(repoRoot, "dist")) : []);
+
+test("the Firefox package is byte for byte what plain `git archive` produces", () => {
+  const repoRoot = makeRepo();
+  const result = buildRelease({ repoRoot, target: "firefox" });
+  const direct = path.join(repoRoot, "direct.zip");
+  execFileSync(
+    "git",
+    ["-c", "core.autocrlf=false", "-c", "core.eol=lf", "archive", "--format=zip", "--output", direct, "HEAD", ...RUNTIME_PATHS],
+    { cwd: repoRoot }
+  );
+  assert.equal(fs.readFileSync(result.outPath).compare(fs.readFileSync(direct)), 0);
+  assert.equal(path.basename(result.outPath), "yt-channels-1.0.0-firefox.zip");
+  assert.equal(result.version, "1.0.0");
+  assert.equal(result.fileCount, PACKAGE_FILES.length);
+});
+
+test("the Firefox package holds the runtime files and nothing else", () => {
+  const files = zipFiles(buildRelease({ repoRoot: makeRepo(), target: "firefox" }).outPath);
+  assert.deepEqual([...files.keys()].sort(), PACKAGE_FILES);
+  assert.deepEqual(JSON.parse(files.get("manifest.json")), FIXTURE_MANIFEST);
+});
+
+test("the Chromium package is the Firefox package plus a generated worker, with a generated manifest", () => {
+  const repoRoot = makeRepo();
+  const firefox = zipFiles(buildRelease({ repoRoot, target: "firefox" }).outPath);
+  const result = buildRelease({ repoRoot, target: "chromium" });
+  const chromium = zipFiles(result.outPath);
+  assert.equal(path.basename(result.outPath), "yt-channels-1.0.0-chromium.zip");
+  assert.deepEqual([...chromium.keys()].sort(), [...PACKAGE_FILES, "background/service-worker.js"].sort());
+
+  const manifest = JSON.parse(chromium.get("manifest.json"));
+  assert.deepEqual(manifest.background, { service_worker: "background/service-worker.js" });
+  assert.equal(manifest.browser_specific_settings, undefined);
+  assert.equal(manifest.minimum_chrome_version, "148");
+  assert.deepEqual(manifest.permissions, ["storage", "contextMenus"]);
+  assert.equal(manifest.version, "1.0.0");
+  assert.equal(
+    chromium.get("background/service-worker.js").toString(),
+    '// Generated by tools/package.mjs from "background.scripts" in manifest.json. Do not edit.\nimportScripts("a.js", "b.js");\n'
+  );
+  for (const [name, content] of firefox) {
+    if (name !== "manifest.json") assert.ok(content.equals(chromium.get(name)), `${name} must be identical in both packages`);
+  }
+});
+
+test("a release refuses a tree with uncommitted changes and writes nothing", () => {
+  const repoRoot = makeRepo();
+  fs.appendFileSync(path.join(repoRoot, "background/a.js"), "const EDITED = true;\n");
+  for (const target of ["firefox", "chromium"]) {
+    assert.throws(() => buildRelease({ repoRoot, target }), /uncommitted changes[\s\S]*background\/a\.js/);
+  }
+  assert.deepEqual(distFiles(repoRoot), []);
+});
+
+test("untracked files do not stop a release", () => {
+  const repoRoot = makeRepo();
+  fs.writeFileSync(path.join(repoRoot, "notes.txt"), "scratch\n");
+  assert.ok(fs.existsSync(buildRelease({ repoRoot, target: "firefox" }).outPath));
+});
+
+test("a manifest that refers to a file missing from the commit fails the build, and no zip is left behind", () => {
+  const repoRoot = makeRepo((files) => {
+    files["content/watch.js"] = null;
+  });
+  for (const target of ["firefox", "chromium"]) {
+    assert.throws(() => buildRelease({ repoRoot, target }), /manifest\.json refers to content\/watch\.js/);
+  }
+  assert.deepEqual(distFiles(repoRoot), []);
+});
+
+test("a top-level name declared in two background scripts fails the build for both targets", () => {
+  const repoRoot = makeRepo((files) => {
+    files["background/a.js"] = "function helper() {}\n";
+    files["background/b.js"] = "async function helper() {}\n";
+  });
+  for (const target of ["firefox", "chromium"]) {
+    assert.throws(() => buildRelease({ repoRoot, target }), /"helper" is declared at the top level of both background\/a\.js and background\/b\.js/);
+  }
+});
+
+test("an overlay that leaves background.scripts in place fails the Chromium build only", () => {
+  const repoRoot = makeRepo((files) => {
+    files["tools/chromium-overlay.json"] = JSON.stringify({ background: { service_worker: "background/service-worker.js" }, minimum_chrome_version: "148" });
+  });
+  assert.throws(() => buildRelease({ repoRoot, target: "chromium" }), /background\.scripts must not be present/);
+  assert.ok(fs.existsSync(buildRelease({ repoRoot, target: "firefox" }).outPath));
+});
+
+test("a Chromium build needs the overlay to be committed; the Firefox build does not", () => {
+  const repoRoot = makeRepo((files) => {
+    files["tools/chromium-overlay.json"] = null;
+  });
+  assert.throws(() => buildRelease({ repoRoot, target: "chromium" }), /tools\/chromium-overlay\.json/);
+  assert.ok(fs.existsSync(buildRelease({ repoRoot, target: "firefox" }).outPath));
+});
+
+test("a committed background/service-worker.js is refused: that file is generated for Chromium", () => {
+  const repoRoot = makeRepo((files) => {
+    files["background/service-worker.js"] = "// written by hand\n";
+  });
+  assert.throws(() => buildRelease({ repoRoot, target: "chromium" }), /background\/service-worker\.js is generated/);
+});
+
+test("--dev builds an unpacked folder from the working tree, without a commit and without a zip", () => {
+  const repoRoot = makeRepo();
+  fs.appendFileSync(path.join(repoRoot, "background/a.js"), "const EDITED = true;\n"); // uncommitted on purpose
+  const firefox = buildDev({ repoRoot, target: "firefox" });
+  assert.equal(firefox.outDir, path.join(repoRoot, "dist", "firefox"));
+  assert.match(fs.readFileSync(path.join(firefox.outDir, "background/a.js"), "utf8"), /EDITED/);
+  assert.equal(fs.existsSync(path.join(firefox.outDir, "README.md")), false);
+  assert.equal(fs.existsSync(path.join(firefox.outDir, "tools")), false);
+
+  const chromium = buildDev({ repoRoot, target: "chromium" });
+  const manifest = JSON.parse(fs.readFileSync(path.join(chromium.outDir, "manifest.json"), "utf8"));
+  assert.equal(manifest.background.service_worker, "background/service-worker.js");
+  assert.ok(fs.existsSync(path.join(chromium.outDir, "background/service-worker.js")));
+  assert.deepEqual(distFiles(repoRoot).sort(), ["chromium", "firefox"]);
+});
+
+test("--dev replaces a folder left by an earlier build instead of merging into it", () => {
+  const repoRoot = makeRepo();
+  buildDev({ repoRoot, target: "firefox" });
+  fs.writeFileSync(path.join(repoRoot, "dist/firefox/leftover.txt"), "from an earlier build\n");
+  buildDev({ repoRoot, target: "firefox" });
+  assert.equal(fs.existsSync(path.join(repoRoot, "dist/firefox/leftover.txt")), false);
+});
+
+test("a second release build replaces the first zip", () => {
+  const repoRoot = makeRepo();
+  const first = buildRelease({ repoRoot, target: "firefox" });
+  const second = buildRelease({ repoRoot, target: "firefox" });
+  assert.equal(first.outPath, second.outPath);
+  assert.equal(first.sha256, second.sha256);
+  assert.deepEqual(distFiles(repoRoot), ["yt-channels-1.0.0-firefox.zip"]);
+});
+
+test("main returns 0 and prints the result for a good build", () => {
+  const repoRoot = makeRepo();
+  const lines = [];
+  assert.equal(main(["firefox"], { repoRoot, log: (line) => lines.push(line), error: () => assert.fail("no error expected") }), 0);
+  assert.match(lines.join("\n"), /firefox package from commit [0-9a-f]{7} \(version 1\.0\.0\)[\s\S]*yt-channels-1\.0\.0-firefox\.zip[\s\S]*9 files/);
+  const devLines = [];
+  assert.equal(main(["chromium", "--dev"], { repoRoot, log: (line) => devLines.push(line), error: () => {} }), 0);
+  assert.match(devLines.join("\n"), /development build from the working tree \(not for release\)/);
+});
+
+test("main prints usage for --help, and refuses missing, extra and unknown arguments", () => {
+  const repoRoot = makeRepo();
+  const run = (argv) => {
+    const out = [];
+    const err = [];
+    const code = main(argv, { repoRoot, log: (line) => out.push(line), error: (line) => err.push(line) });
+    return { code, out: out.join("\n"), err: err.join("\n") };
+  };
+  assert.deepEqual(run(["--help"]), { code: 0, out: USAGE, err: "" });
+  assert.equal(run([]).code, 1);
+  assert.match(run([]).err, /expected exactly one target[\s\S]*Usage:/);
+  assert.match(run(["firefox", "chromium"]).err, /expected exactly one target/);
+  assert.match(run(["safari"]).err, /unknown target "safari"/);
+  assert.match(run(["firefox", "--zip"]).err, /unknown option --zip/);
+  assert.deepEqual(distFiles(repoRoot), []);
+});
+
+test("main reports a failed build as a plain message and exit code 1", () => {
+  const repoRoot = makeRepo();
+  fs.appendFileSync(path.join(repoRoot, "background/a.js"), "\n");
+  const err = [];
+  assert.equal(main(["firefox"], { repoRoot, log: () => {}, error: (line) => err.push(line) }), 1);
+  assert.match(err.join("\n"), /^error: tracked files have uncommitted changes/);
+});
+
+test("the real command line answers --help with exit code 0 and a bad target with exit code 1", () => {
+  const tool = fileURLToPath(new URL("./package.mjs", import.meta.url));
+  const help = spawnSync(process.execPath, [tool, "--help"], { encoding: "utf8" });
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /Usage: node tools\/package\.mjs/);
+  const bad = spawnSync(process.execPath, [tool, "safari"], { encoding: "utf8" });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /unknown target "safari"/);
 });

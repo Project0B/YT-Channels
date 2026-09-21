@@ -1,0 +1,5 @@
+{
+  "background": { "scripts": null, "service_worker": "background/service-worker.js" },
+  "browser_specific_settings": null,
+  "minimum_chrome_version": "148"
+}

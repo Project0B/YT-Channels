@@ -1,6 +1,18 @@
-// Packaging tool for the extension. This first part holds the helpers that need no git and no
-// files, so they can be tested alone; the command line is built on top of them.
+// Builds the Firefox and Chromium packages of the extension:
+//
+//   node tools/package.mjs firefox           release zip for AMO
+//   node tools/package.mjs chromium          release zip for the Chrome Web Store and Edge Add-ons
+//   node tools/package.mjs <target> --dev    unpacked folder from the working tree, not for release
+//
+// A release package is made from the last commit, so it holds exactly what was committed. The Firefox
+// package is nothing but `git archive` of the runtime files. The Chromium package is the same archive
+// with two generated files: the manifest (the Firefox one with tools/chromium-overlay.json applied) and
+// a service-worker entry that loads the scripts listed in `background.scripts`. Needs Node 22 and git.
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
 
 /** A failure the user can act on: printed as a plain message, exit code 1. */
@@ -170,4 +182,240 @@ export function readZip(buffer) {
     else throw new PackageError(`unsupported zip compression method ${method} for ${name}`);
   }
   return files;
+}
+
+const PACKAGE_NAME = "yt-channels";
+const TARGETS = ["firefox", "chromium"];
+// What ships: the file list every AMO upload has used.
+export const RUNTIME_PATHS = ["manifest.json", "background", "common", "content", "feed", "icons", "options", "LICENSE.txt"];
+const OVERLAY_PATH = "tools/chromium-overlay.json";
+// Text files must come out with LF endings whatever the platform's git settings are.
+const GIT_LINE_ENDINGS = ["-c", "core.autocrlf=false", "-c", "core.eol=lf"];
+const MIN_GIT = [2, 32]; // `git archive --add-virtual-file`, used for the generated Chromium files
+
+function git(repoRoot, args) {
+  try {
+    return execFileSync("git", args, { cwd: repoRoot, maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    // The generated files travel as arguments; keep their text out of the message.
+    const shown = args.filter((arg) => !arg.startsWith("--add-virtual-file=")).join(" ");
+    throw new PackageError(`git ${shown} failed: ${error.stderr?.toString().trim() || error.message}`);
+  }
+}
+
+const gitText = (repoRoot, args) => git(repoRoot, args).toString("utf8");
+
+function assertTarget(target) {
+  if (!TARGETS.includes(target)) {
+    throw new PackageError(`unknown target "${target}"; use one of: ${TARGETS.join(", ")}`);
+  }
+}
+
+function assertGitVersion(repoRoot) {
+  const [, major, minor] = /(\d+)\.(\d+)/.exec(gitText(repoRoot, ["--version"])) ?? [];
+  if (!major || Number(major) < MIN_GIT[0] || (Number(major) === MIN_GIT[0] && Number(minor) < MIN_GIT[1])) {
+    throw new PackageError(`git ${MIN_GIT.join(".")} or newer is needed for the Chromium package`);
+  }
+}
+
+function assertCleanTree(repoRoot) {
+  const changes = gitText(repoRoot, ["status", "--porcelain", "--untracked-files=no"]).trim();
+  if (changes) {
+    throw new PackageError(
+      `tracked files have uncommitted changes, and a release package holds only what is committed. Commit or stash them first:\n${changes}`
+    );
+  }
+}
+
+function throwIfProblems(problems) {
+  if (problems.length > 0) throw new PackageError(`the package is not right:\n  - ${problems.join("\n  - ")}`);
+}
+
+/** The runtime files and their contents as committed at HEAD. */
+function commitSource(repoRoot) {
+  const files = gitText(repoRoot, ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ...RUNTIME_PATHS])
+    .split("\0")
+    .filter(Boolean)
+    .sort();
+  return { files, read: (file) => git(repoRoot, ["show", `HEAD:${file}`]) };
+}
+
+/** The runtime files and their contents as they are in the working tree. */
+function workingTreeSource(repoRoot) {
+  const files = [];
+  const walk = (relative) => {
+    const full = path.join(repoRoot, relative);
+    if (!fs.existsSync(full)) return;
+    if (fs.statSync(full).isDirectory()) {
+      for (const entry of fs.readdirSync(full)) walk(`${relative}/${entry}`);
+    } else {
+      files.push(relative);
+    }
+  };
+  RUNTIME_PATHS.forEach(walk);
+  return { files: files.sort(), read: (file) => fs.readFileSync(path.join(repoRoot, file)) };
+}
+
+/**
+ * Works out what a package holds — its generated files and its complete file list — and finds
+ * everything wrong with it before anything is written.
+ */
+function describePackage(target, source) {
+  const root = JSON.parse(source.read("manifest.json").toString("utf8"));
+  const generated = new Map();
+  let manifest = root;
+  if (target === "chromium") {
+    const overlay = JSON.parse(source.read(OVERLAY_PATH).toString("utf8"));
+    manifest = chromiumManifest(root, overlay);
+    const workerPath = manifest.background?.service_worker;
+    generated.set("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+    generated.set(workerPath, workerEntry(root.background?.scripts, workerPath));
+  }
+
+  const expected = new Set(source.files);
+  const problems = [...checkTargetKeys(target, manifest, root)];
+  for (const file of generated.keys()) {
+    if (file !== "manifest.json" && expected.has(file)) {
+      problems.push(`${file} is generated for the ${target} package; remove it from the repository`);
+    }
+    expected.add(file);
+  }
+  for (const file of manifestFiles(manifest)) {
+    if (!expected.has(file)) problems.push(`manifest.json refers to ${file}, which is not in the package`);
+  }
+  const scripts = Object.fromEntries(
+    (root.background?.scripts ?? []).filter((file) => expected.has(file)).map((file) => [file, source.read(file).toString("utf8")])
+  );
+  for (const { name, files } of duplicateTopLevelNames(scripts)) {
+    problems.push(
+      `"${name}" is declared at the top level of both ${files.join(" and ")}; background scripts share one global scope, so the later declaration silently replaces the earlier one`
+    );
+  }
+  return { version: root.version, generated, expected: [...expected].sort(), problems };
+}
+
+/** Reads the finished zip back and checks it holds exactly the expected files, with exactly the expected contents. */
+function verifyZip(zip, pkg, source) {
+  const files = readZip(zip);
+  const problems = [];
+  const missing = pkg.expected.filter((file) => !files.has(file));
+  const unexpected = [...files.keys()].filter((file) => !pkg.expected.includes(file));
+  if (missing.length > 0) problems.push(`missing from the zip: ${missing.join(", ")}`);
+  if (unexpected.length > 0) problems.push(`unexpected in the zip: ${unexpected.join(", ")}`);
+  for (const [name, content] of files) {
+    if (!pkg.expected.includes(name)) continue;
+    const generated = pkg.generated.has(name);
+    const wanted = generated ? Buffer.from(pkg.generated.get(name), "utf8") : source.read(name);
+    if (!content.equals(wanted)) problems.push(`${name} differs from ${generated ? "the generated text" : "the committed file"}`);
+  }
+  throwIfProblems(problems);
+}
+
+/** Packages the last commit into dist/<name>-<version>-<target>.zip. */
+export function buildRelease({ repoRoot, target }) {
+  assertTarget(target);
+  if (target === "chromium") assertGitVersion(repoRoot);
+  assertCleanTree(repoRoot);
+  const commit = gitText(repoRoot, ["rev-parse", "HEAD"]).trim();
+  const source = commitSource(repoRoot);
+  const pkg = describePackage(target, source);
+  throwIfProblems(pkg.problems);
+
+  const outPath = path.join(repoRoot, "dist", `${PACKAGE_NAME}-${pkg.version}-${target}.zip`);
+  const partial = `${outPath}.partial`;
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  try {
+    // The Chromium archive leaves out the committed manifest and adds the generated files instead.
+    const paths = target === "chromium" ? RUNTIME_PATHS.filter((p) => p !== "manifest.json") : RUNTIME_PATHS;
+    const added = [...pkg.generated].map(([file, text]) => `--add-virtual-file=${file}:${text}`);
+    git(repoRoot, [...GIT_LINE_ENDINGS, "archive", "--format=zip", "--output", partial, ...added, "HEAD", ...paths]);
+    const zip = fs.readFileSync(partial);
+    verifyZip(zip, pkg, source);
+    fs.rmSync(outPath, { force: true });
+    fs.renameSync(partial, outPath);
+    return {
+      target,
+      commit,
+      version: pkg.version,
+      outPath,
+      fileCount: pkg.expected.length,
+      bytes: zip.length,
+      sha256: createHash("sha256").update(zip).digest("hex"),
+    };
+  } finally {
+    fs.rmSync(partial, { force: true });
+  }
+}
+
+/** Writes the package as an unpacked folder, dist/<target>/, from the working tree. Not for release. */
+export function buildDev({ repoRoot, target }) {
+  assertTarget(target);
+  const source = workingTreeSource(repoRoot);
+  const pkg = describePackage(target, source);
+  throwIfProblems(pkg.problems);
+
+  const outDir = path.join(repoRoot, "dist", target);
+  fs.rmSync(outDir, { recursive: true, force: true });
+  for (const file of pkg.expected) {
+    const content = pkg.generated.has(file) ? Buffer.from(pkg.generated.get(file), "utf8") : source.read(file);
+    fs.mkdirSync(path.dirname(path.join(outDir, file)), { recursive: true });
+    fs.writeFileSync(path.join(outDir, file), content);
+  }
+  return { target, version: pkg.version, outDir, fileCount: pkg.expected.length };
+}
+
+export const USAGE = `Usage: node tools/package.mjs <firefox|chromium> [--dev]
+
+  firefox     release zip for AMO: git archive of the runtime files, nothing else
+  chromium    release zip for the Chrome Web Store and Edge Add-ons
+  --dev       unpacked folder from the working tree (dist/<target>/), not for release
+
+A release package is made from the last commit and needs a clean tree. Output goes to dist/.`;
+
+/** The command line. Returns the exit code. */
+export function main(argv, { repoRoot, log = console.log, error = console.error }) {
+  if (argv.includes("--help") || argv.includes("-h")) {
+    log(USAGE);
+    return 0;
+  }
+  const dev = argv.includes("--dev");
+  const rest = argv.filter((arg) => arg !== "--dev");
+  const unknown = rest.filter((arg) => arg.startsWith("-"));
+  let problem = null;
+  if (unknown.length > 0) problem = `unknown option ${unknown[0]}`;
+  else if (rest.length !== 1) problem = "expected exactly one target";
+  else if (!TARGETS.includes(rest[0])) problem = `unknown target "${rest[0]}"`;
+  if (problem) {
+    error(`error: ${problem}\n\n${USAGE}`);
+    return 1;
+  }
+
+  const [target] = rest;
+  const shown = (file) => path.relative(repoRoot, file).split(path.sep).join("/");
+  try {
+    if (dev) {
+      const result = buildDev({ repoRoot, target });
+      log(
+        `${target} development build from the working tree (not for release)\n` +
+          `  ${shown(result.outDir)}/  (${result.fileCount} files, version ${result.version})`
+      );
+    } else {
+      const result = buildRelease({ repoRoot, target });
+      log(
+        `${target} package from commit ${result.commit.slice(0, 7)} (version ${result.version})\n` +
+          `  ${shown(result.outPath)}\n` +
+          `  ${result.fileCount} files, ${(result.bytes / 1024).toFixed(1)} KB, sha256 ${result.sha256}`
+      );
+    }
+    return 0;
+  } catch (e) {
+    if (!(e instanceof PackageError)) throw e;
+    error(`error: ${e.message}`);
+    return 1;
+  }
+}
+
+const thisFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && fs.realpathSync.native(process.argv[1]) === fs.realpathSync.native(thisFile)) {
+  process.exitCode = main(process.argv.slice(2), { repoRoot: path.resolve(path.dirname(thisFile), "..") });
 }
