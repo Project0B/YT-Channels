@@ -75,14 +75,17 @@ function isConsentWallPage(html) {
 
 const PAGE_FETCH_TIMEOUT_MS = 15000;
 
-// See the matching helper in rss.js: plain fetch() never times out on its
-// own, so a stalled request would otherwise hang the Manage page's
-// "Resolve" button (and its await chain) indefinitely. The timer is kept
-// alive (via the returned clearTimer) until the caller finishes reading the
-// response body, not just until fetch() resolves — otherwise a connection
-// that sends headers promptly but stalls mid-body would hang response.text()
-// with no timeout protection at all (see the matching note in rss.js).
-async function fetchWithTimeout(url, options, timeoutMs) {
+// The page counterpart of fetchWithTimeout in rss.js. It has its own name
+// because the background scripts share one global scope: a second function
+// called fetchWithTimeout would silently replace the feed one and strip the
+// error kinds it sets. Plain fetch() never times out on its own, so a stalled
+// request would otherwise hang the Manage page's "Resolve" button (and its
+// await chain) indefinitely. The timer is kept alive (via the returned
+// clearTimer) until the caller finishes reading the response body, not just
+// until fetch() resolves — otherwise a connection that sends headers promptly
+// but stalls mid-body would hang response.text() with no timeout protection
+// at all (see the matching note in rss.js).
+async function fetchPageWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -105,7 +108,7 @@ async function fetchPage(url) {
   // requests. Including credentials lets the user's normal youtube.com
   // session (e.g. an already-accepted CONSENT cookie) through, which is
   // what makes channel-page resolution work at all.
-  const { response, clearTimer } = await fetchWithTimeout(
+  const { response, clearTimer } = await fetchPageWithTimeout(
     url,
     { credentials: "include" },
     PAGE_FETCH_TIMEOUT_MS
