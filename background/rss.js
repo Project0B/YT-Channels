@@ -149,10 +149,11 @@ async function fetchFeed(url) {
 }
 
 /**
- * Fetch a channel's videos. The long-form feed is preferred; a 404 there means the
- * channel has no long-form uploads and is answered from the plain feed. Any other
- * failure never yields cacheable data: "failed" tells the caller to keep its last good
- * list, and "stopgap" is a one-off list for a channel that has none.
+ * Fetch a channel's videos. The long-form feed is preferred; a 404 there, or a feed with
+ * no videos left once Shorts are dropped, means the channel has no long-form uploads and
+ * is answered from the plain feed. Any other failure never yields cacheable data:
+ * "failed" tells the caller to keep its last good list, and "stopgap" is a one-off list
+ * for a channel that has none.
  * @param {string} channelId
  * @param {{hasLastGood?: boolean}} [options]
  * @returns {Promise<
@@ -161,18 +162,21 @@ async function fetchFeed(url) {
  *   {status: "failed", error: string}>}
  */
 async function fetchChannelVideos(channelId, { hasLastGood = false } = {}) {
-  let longFormError;
+  let longFormError = null;
   try {
     const videos = await fetchFeed(longFormFeedUrl(channelId));
-    return { status: "ok", videos, source: "long-form" };
+    if (videos.length > 0) return { status: "ok", videos, source: "long-form" };
   } catch (e) {
     longFormError = e;
   }
 
-  const noLongForm = longFormError.kind === "http" && longFormError.status === 404;
-  // No answer at all means the network is down; a second request would only double the wait.
-  if (longFormError.kind === "network") return { status: "failed", error: longFormError.message };
-  if (!noLongForm && hasLastGood) return { status: "failed", error: longFormError.message };
+  const noLongForm = !longFormError || (longFormError.kind === "http" && longFormError.status === 404);
+  if (!noLongForm) {
+    // No answer at all means the network is down; a second request would only double the wait.
+    if (longFormError.kind === "network" || hasLastGood) {
+      return { status: "failed", error: longFormError.message };
+    }
+  }
 
   try {
     const videos = await fetchFeed(plainChannelFeedUrl(channelId));
