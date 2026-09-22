@@ -35,6 +35,8 @@ No API key, no setup beyond installing and adding channels.
 
 Everything stays on your device: your categories, channel list, settings, cached video lists and watch progress live in the browser's extension storage, and are never sent anywhere. The extension only talks to youtube.com — to read its public upload feeds, to look up a channel from a link you paste, and (through a small script on youtube.com pages) to note how far you have watched a video — and it loads thumbnails and channel pictures from YouTube's image servers. There are no accounts, no analytics and no telemetry.
 
+The full policy — what is stored, what is contacted, how cookies are handled — is in [PRIVACY.md](PRIVACY.md).
+
 ## Packaging
 
 For contributors and releases. Needs Node 22 or newer and Git 2.32 or newer, and nothing else — there is no `package.json` and no dependencies.
