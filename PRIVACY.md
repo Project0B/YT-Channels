@@ -12,6 +12,8 @@ The extension keeps the following in your browser's extension storage, and nowhe
 - **Saved video lists:** for each channel, the latest videos last fetched from YouTube — titles, thumbnail links and publish dates — so that switching back to a category is instant.
 - **Watch progress:** for each YouTube video you watch in this browser while the extension is installed, the video's ID, how far you got, and when you last watched it.
 
+When a category cannot be updated, the extension writes a few lines to your browser's own developer console naming the channels it could not reach and what YouTube answered, so that you can see what went wrong and include it in a bug report if you choose to. Those lines stay in your browser, are not stored, and disappear when you close the console.
+
 Removing a channel deletes its saved videos. Old watch-progress entries are tidied automatically. Removing the extension deletes everything it stored. Exporting your setup creates a file on your own device with your categories and channel identifiers only; watch progress is never exported, and nothing is shared unless you send the file to someone yourself.
 
 ## What it connects to

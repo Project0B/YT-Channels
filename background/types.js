@@ -46,3 +46,34 @@
  *
  * @typedef {Object.<string, WatchProgress>} WatchedMap
  */
+
+/**
+ * What one Load observed, formatted for the console by common/diagnostics.js.
+ * @typedef {Object} LoadReport
+ * @property {string} categoryLabel
+ * @property {number} channelCount every Channel of the Category
+ * @property {number} fetchedCount those a Load actually fetched (the rest were cache-fresh)
+ * @property {number} concurrency
+ * @property {number} elapsedMs
+ * @property {number} requestCount feed requests made, which exceeds fetchedCount
+ * @property {number} servedFromPlain Channels answered from the Plain feed, each costing two requests
+ * @property {number} retried how many Channels the retry pass was given
+ * @property {number} retryBudgetMs how long the retry pass was allowed to take
+ * @property {ChannelFailure[]} failures every Channel that failed at least once, in order
+ */
+
+/**
+ * One Channel's failed fetch within a Load.
+ * @typedef {Object} ChannelFailure
+ * @property {string} channelId
+ * @property {string} name
+ * @property {"network"|"http"|"parse"} kind
+ * @property {number|undefined} httpStatus set when kind is "http"
+ * @property {"long-form"|"plain"} feed which feed the reported failure came from
+ * @property {string} error
+ * @property {boolean} retryable
+ * @property {boolean} hadLastGood there were cached videos to keep showing
+ * @property {number} ms
+ * @property {boolean} recovered a later try in the same Load succeeded
+ * @property {boolean} triedAgain the retry pass actually reached this Channel
+ */

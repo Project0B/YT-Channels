@@ -279,24 +279,59 @@ async function fetchFeed(url) {
   }
 }
 
+// Whether a failure is more likely a passing glitch than an answer about the
+// channel. YouTube's feed endpoint intermittently serves 404s, 5xx errors and
+// HTML error pages for channels that answered normally a second earlier, and it
+// does so to many channels at once, so a whole Load can come back "failed" for
+// no lasting reason. A "network" failure is the one that is not worth another
+// go: nothing answered at all, so the connection is down and an immediate
+// second request would only fail the same way.
+function isTransientFeedError(err) {
+  return err.kind === "http" || err.kind === "parse";
+}
+
+// A failed result: the message the Feed page shows, whether a later retry is
+// worth making, and the pieces a Load needs to say in the console what YouTube
+// actually did (see common/diagnostics.js). `alsoFailed` is the other feed's
+// error when both were tried — the retry is worth making only if neither
+// failure was the connection being down.
+function failedResult(err, feed, alsoFailed) {
+  return {
+    status: "failed",
+    error: err.message || "Fetch failed",
+    retryable: isTransientFeedError(err) && (!alsoFailed || isTransientFeedError(alsoFailed)),
+    kind: err.kind,
+    httpStatus: err.status,
+    feed,
+    // The plain feed is only ever read after the long-form feed has been tried,
+    // so a result that names it cost two requests.
+    requests: feed === "plain" || alsoFailed ? 2 : 1,
+  };
+}
+
 /**
  * Fetch a channel's videos. The long-form feed is preferred; a 404 there, or a feed with
  * no videos left once Shorts are dropped, means the channel has no long-form uploads and
  * is answered from the plain feed. Any other failure never yields cacheable data:
  * "failed" tells the caller to keep its last good list, and "stopgap" is a one-off list
- * for a channel that has none.
+ * for a channel that has none. Every result says how many requests it cost, because a
+ * channel with no long-form feed silently costs two on every Load and that is invisible
+ * otherwise — a long-form 404 is the answer "no long-form uploads", never a failure.
+ * A failure also says whether it is worth another try later
+ * (see isTransientFeedError); the caller decides when, so that a retry does not join the
+ * burst of requests that provoked the failure.
  * @param {string} channelId
  * @param {{hasLastGood?: boolean}} [options]
  * @returns {Promise<
- *   {status: "ok", videos: Video[], source: "long-form"|"plain"} |
- *   {status: "stopgap", videos: Video[], error: string} |
- *   {status: "failed", error: string}>}
+ *   {status: "ok", videos: Video[], source: "long-form"|"plain", requests: number} |
+ *   {status: "stopgap", videos: Video[], error: string, kind: string, httpStatus: number|undefined, feed: "long-form", requests: number} |
+ *   {status: "failed", error: string, retryable: boolean, kind: string, httpStatus: number|undefined, feed: "long-form"|"plain", requests: number}>}
  */
 async function fetchChannelVideos(channelId, { hasLastGood = false } = {}) {
   let longFormError = null;
   try {
     const videos = await fetchFeed(longFormFeedUrl(channelId));
-    if (videos.length > 0) return { status: "ok", videos, source: "long-form" };
+    if (videos.length > 0) return { status: "ok", videos, source: "long-form", requests: 1 };
   } catch (e) {
     longFormError = e;
   }
@@ -305,17 +340,32 @@ async function fetchChannelVideos(channelId, { hasLastGood = false } = {}) {
   if (!noLongForm) {
     // No answer at all means the network is down; a second request would only double the wait.
     if (longFormError.kind === "network" || hasLastGood) {
-      return { status: "failed", error: longFormError.message };
+      return failedResult(longFormError, "long-form");
     }
   }
 
   try {
     const videos = await fetchFeed(plainChannelFeedUrl(channelId));
     return noLongForm
-      ? { status: "ok", videos, source: "plain" }
-      : { status: "stopgap", videos, error: longFormError.message };
+      ? { status: "ok", videos, source: "plain", requests: 2 }
+      : {
+          status: "stopgap",
+          videos,
+          requests: 2,
+          error: longFormError.message,
+          // The Feed page counts a stopgap among the channels that failed to
+          // update, so it carries what the console needs to explain it too.
+          kind: longFormError.kind,
+          httpStatus: longFormError.status,
+          feed: "long-form",
+        };
   } catch (plainError) {
-    return { status: "failed", error: (noLongForm ? plainError : longFormError).message || "Fetch failed" };
+    // Both feeds have now failed. The one that is reported is the one that says
+    // something about the Channel: the plain feed's when the long-form feed is
+    // simply missing, otherwise the long-form feed's.
+    return noLongForm
+      ? failedResult(plainError, "plain")
+      : failedResult(longFormError, "long-form", plainError);
   }
 }
 

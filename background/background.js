@@ -35,6 +35,15 @@ async function runWithConcurrency(items, limit, worker) {
 // Category → channel resolution
 // ---------------------------------------------------------------------------
 
+// What a Load calls itself in the console. The Built-in views have no record
+// in the config, and a Category the user renamed mid-Load may have none either.
+function categoryLabel(config, categoryId) {
+  if (categoryId === "all") return "All";
+  if (categoryId === "uncategorized") return "Uncategorized";
+  const category = config.categories.find((c) => c.id === categoryId);
+  return category ? category.name : categoryId;
+}
+
 function channelsForCategory(config, categoryId) {
   if (categoryId === "all") {
     return config.channels;
@@ -96,6 +105,35 @@ function mergeAndSort(videosByChannel, channels, limit, watched) {
 // GET_CATEGORY_FEED orchestration (streamed over a Port)
 // ---------------------------------------------------------------------------
 
+// A Load fetches every stale channel of a Category at once, and YouTube answers
+// some of that burst with a 404, a 5xx or an HTML error page even though the
+// channels are fine — for a large Category that is routinely dozens of them at
+// a time, reported as "N channels failed to update" over last good lists that
+// were never actually out of date. As in resolveIdentifiers below, those are
+// tried once more afterwards, one at a time and a little apart, so the retry
+// does not re-create the burst that provoked the failure.
+//
+// The budget bounds how long a Load can go on recovering: when YouTube is
+// failing wholesale rather than glitching, spacing out hundreds of retries
+// would only keep the page's spinner going for minutes. Channels the budget
+// does not reach keep the failure they already had, which is what a Load
+// without any retry pass would have left them with anyway.
+const FEED_RETRY_SPACING_MS = 400;
+const FEED_RETRY_BUDGET_MS = 20000;
+
+// Which channels were reached is recorded on the channels themselves, so there
+// is nothing to report back: a channel the budget skipped simply never gets its
+// `triedAgain` flag set.
+async function retryFailedChannels(channels, fetchChannel, abandoned) {
+  const deadline = Date.now() + FEED_RETRY_BUDGET_MS;
+  for (const channel of channels) {
+    if (abandoned() || Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, FEED_RETRY_SPACING_MS));
+    if (abandoned()) return;
+    await fetchChannel(channel);
+  }
+}
+
 async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
   // feed.js disconnects the previous port whenever a new category is
   // requested (e.g. rapid tab switching), but nothing here used to notice —
@@ -134,6 +172,14 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
 
   const videosByChannel = new Map();
   const errors = {};
+  // Every Channel that failed at least once this Load, in the order it failed.
+  const failures = new Map();
+  const loadStart = Date.now();
+  // Requests, not channels: a channel with no long-form feed costs two of them
+  // on every Load, which is what makes a big Category's burst bigger than its
+  // channel count suggests.
+  let requestCount = 0;
+  let servedFromPlain = 0;
 
   const toFetch = [];
   for (const channel of channels) {
@@ -161,41 +207,108 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
   // Initial paint with whatever cache we already have.
   postProgress();
 
+  const fetchChannel = async (channel) => {
+    // Stamped at request start so a slow, older request can't overwrite a newer result.
+    const startedAt = new Date().toISOString();
+    const hadLastGood = Boolean(cache[channel.channelId]);
+    const clockStart = Date.now();
+    const result = await Rss.fetchChannelVideos(channel.channelId, { hasLastGood: hadLastGood });
+    const ms = Date.now() - clockStart;
+    requestCount += result.requests || 1;
+    if (result.status === "ok" && result.source === "plain") servedFromPlain++;
+
+    if (result.status === "ok") {
+      videosByChannel.set(channel.channelId, result.videos);
+      delete errors[channel.channelId];
+      await Storage.setCacheEntry(channel.channelId, {
+        v: Storage.CACHE_ENTRY_VERSION,
+        fetchedAt: startedAt,
+        source: result.source,
+        videos: result.videos,
+      });
+    } else {
+      // Failures never touch the cache: keep the last good list (already in
+      // videosByChannel) or show a one-off stopgap list for this run only.
+      errors[channel.channelId] = result.error;
+      if (result.status === "stopgap") videosByChannel.set(channel.channelId, result.videos);
+    }
+
+    if (result.status === "ok") {
+      const earlier = failures.get(channel.channelId);
+      if (earlier) earlier.recovered = true;
+    } else {
+      // "failed" and "stopgap" both leave the channel in `errors`, so the
+      // banner counts both and the console has to account for both — a stopgap
+      // is a one-off list, not a channel that updated. The latest attempt
+      // replaces an earlier one: it is the outcome the banner reflects.
+      const failure = {
+        channelId: channel.channelId,
+        name: channel.name,
+        kind: result.kind,
+        httpStatus: result.httpStatus,
+        feed: result.feed,
+        error: result.error,
+        retryable: result.status === "failed" && result.retryable,
+        servedStopgap: result.status === "stopgap",
+        hadLastGood,
+        ms,
+        recovered: false,
+        triedAgain: false,
+      };
+      failures.set(channel.channelId, failure);
+      // Printed as it happens as well as in the report at the end, so a Load
+      // that is still running — or one whose page was closed — is not silent.
+      console.warn(`${Diagnostics.LOG_PREFIX} ${Diagnostics.formatFailureLine(failure)}`);
+    }
+    postProgress();
+    return result;
+  };
+
+  let retried = 0;
   if (toFetch.length > 0) {
+    const toRetry = [];
     await runWithConcurrency(toFetch, settings.fetchConcurrency, async (channel) => {
       // Abandoned mid-flight (port disconnected) — don't start fetches for
       // channels this run hasn't reached yet.
       if (disconnected) return;
-      // Stamped at request start so a slow, older request can't overwrite a newer result.
-      const startedAt = new Date().toISOString();
-      const result = await Rss.fetchChannelVideos(channel.channelId, {
-        hasLastGood: Boolean(cache[channel.channelId]),
-      });
-
-      if (result.status === "ok") {
-        videosByChannel.set(channel.channelId, result.videos);
-        await Storage.setCacheEntry(channel.channelId, {
-          v: Storage.CACHE_ENTRY_VERSION,
-          fetchedAt: startedAt,
-          source: result.source,
-          videos: result.videos,
-        });
-      } else {
-        // Failures never touch the cache: keep the last good list (already in
-        // videosByChannel) or show a one-off stopgap list for this run only.
-        errors[channel.channelId] = result.error;
-        if (result.status === "stopgap") videosByChannel.set(channel.channelId, result.videos);
-      }
-      postProgress();
+      const result = await fetchChannel(channel);
+      if (result.status === "failed" && result.retryable) toRetry.push(channel);
     });
+    // Marked after the fetch, because a fetch that fails again replaces the
+    // channel's entry: without this, a channel the budget never reached would
+    // be reported as "still failing after a retry" that never happened.
+    const retryOne = async (channel) => {
+      const result = await fetchChannel(channel);
+      const failure = failures.get(channel.channelId);
+      if (failure) failure.triedAgain = true;
+      return result;
+    };
+    await retryFailedChannels(toRetry, retryOne, () => disconnected);
+    retried = toRetry.length;
   }
 
   const finalVideos = mergeAndSort(videosByChannel, channels, settings.videosPerCategoryLimit, watched);
+  /** @type {LoadReport} */
+  const diagnostics = {
+    categoryLabel: categoryLabel(config, categoryId),
+    channelCount: channels.length,
+    fetchedCount: toFetch.length,
+    concurrency: settings.fetchConcurrency,
+    elapsedMs: Date.now() - loadStart,
+    requestCount,
+    servedFromPlain,
+    retried,
+    retryBudgetMs: FEED_RETRY_BUDGET_MS,
+    failures: [...failures.values()],
+  };
+  for (const line of Diagnostics.formatLoadReport(diagnostics)) console.warn(line);
+
   safePost({
     type: "CATEGORY_FEED_DONE",
     categoryId,
     videos: finalVideos,
     errors: { ...errors },
+    diagnostics,
   });
 }
 
@@ -208,6 +321,10 @@ browser.runtime.onConnect.addListener((port) => {
     port.onMessage.addListener((msg) => {
       if (msg?.type === "GET_CATEGORY_FEED") {
         handleGetCategoryFeed(msg.categoryId, Boolean(msg.forceRefresh), port).catch((err) => {
+          // A Load only lands here when something outside the per-channel
+          // handling broke (storage, a bad config), which the page can show
+          // only as "check your connection" — so the real error is logged.
+          console.error(`${Diagnostics.LOG_PREFIX} Load "${msg.categoryId}" failed outright`, err);
           // The port may already be disconnected (see handleGetCategoryFeed's
           // safePost) — posting to a dead port throws, so guard this too.
           try {
@@ -273,7 +390,10 @@ async function resolveIdentifiers(identifiers, settings, port) {
       // Also keeps a service worker awake through a long retry pass.
       port.postMessage({ type: "IMPORT_PROGRESS", resolved: resolvedCount, total: identifiers.length });
     }
-    if (last) errors.push({ identifier, error: last.message || "Couldn't resolve" });
+    if (last) {
+      errors.push({ identifier, error: last.message || "Couldn't resolve" });
+      console.warn(`${Diagnostics.LOG_PREFIX} Could not resolve "${identifier}" —`, last.message || last);
+    }
   }
 
   return { results, errors };

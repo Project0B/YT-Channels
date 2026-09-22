@@ -199,6 +199,14 @@ function finalizeCategory(msg) {
   const channelCount = channelsForCategoryClient(msg.categoryId).length;
   const errorCount = Object.keys(msg.errors || {}).length;
 
+  // The banner can only say how many Channels failed. The console says which
+  // ones and what YouTube answered, here rather than only in the background's
+  // console, because this one opens with F12 on the page already in front of
+  // the user. A Load in which nothing failed prints nothing.
+  if (msg.diagnostics) {
+    for (const line of Diagnostics.formatLoadReport(msg.diagnostics)) console.warn(line);
+  }
+
   if (msg.videos.length === 0) {
     if (errorCount > 0 && errorCount === channelCount) {
       clearGrid();

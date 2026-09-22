@@ -54,6 +54,8 @@ The output goes to `dist/`. A release zip is made from the last commit (the tool
 
 Please open an issue: [issues](https://github.com/Project0B/YT-Channels/issues)
 
+If a category says some channels failed to update, the feed page's console explains which ones and what YouTube answered. Press F12 on the YT Channels tab, open the Console, press Refresh, and copy the lines beginning with `[YT Channels]` into the issue. Nothing is logged when everything loads normally, and nothing is ever sent anywhere — see [PRIVACY.md](PRIVACY.md).
+
 ## Suggesting features
 
 Suggestions are welcome via this form: [YT Channels - Feature Suggestion](https://forms.gle/ikP5KUtdFz3VWreX7)
