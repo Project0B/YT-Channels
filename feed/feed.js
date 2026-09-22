@@ -54,7 +54,12 @@ async function init() {
   loadCategory(state.activeCategoryId, false);
 
   $("refresh-button").addEventListener("click", () => loadCategory(state.activeCategoryId, true));
-  $("status-banner-dismiss").addEventListener("click", () => hideBanner());
+  $("status-banner-dismiss").addEventListener("click", () => {
+    // The retry pass keeps updating the banner while the Load finishes, so a
+    // dismissal has to stick for the rest of this Load or it would spring back.
+    bannerDismissed = true;
+    hideBanner();
+  });
 
   $("manage-link").addEventListener("click", focusManageOnPlainClick);
 }
@@ -125,6 +130,7 @@ function setRefreshSpinning(spinning) {
 }
 
 function loadCategory(categoryId, forceRefresh) {
+  bannerDismissed = false;
   hideBanner();
   const channelCount = channelsForCategoryClient(categoryId).length;
 
@@ -161,14 +167,25 @@ function requestCategoryFeed(categoryId, forceRefresh) {
   const requestPort = browser.runtime.connect({ name: "feed" });
   activePort = requestPort;
   let settled = false;
+  let firstPassDone = false;
 
   requestPort.onMessage.addListener((msg) => {
     if (!msg || msg.categoryId !== state.activeCategoryId) return;
 
     if (msg.type === "CATEGORY_FEED_PARTIAL") {
-      if (msg.videos.length > 0) {
-        renderVideoGrid(msg.videos);
+      if (msg.firstPassDone) {
+        // Every channel has been asked once. The rest of the Load is the retry
+        // pass repairing what failed, which the user should not have to wait
+        // through: stop the spinner, show what there is, and treat a later
+        // disconnect as a normal ending rather than a failure.
+        settled = true;
+        firstPassDone = true;
+        setRefreshSpinning(false);
       }
+      // Once the page is showing results, each recovered channel updates the
+      // banner too, so the failure count falls as the retry pass works.
+      if (firstPassDone) finalizeCategory(msg, { logReport: false });
+      else if (msg.videos.length > 0) renderVideoGrid(msg.videos);
     } else if (msg.type === "CATEGORY_FEED_DONE") {
       settled = true;
       setRefreshSpinning(false);
@@ -195,15 +212,17 @@ function requestCategoryFeed(categoryId, forceRefresh) {
   requestPort.postMessage({ type: "GET_CATEGORY_FEED", categoryId, forceRefresh });
 }
 
-function finalizeCategory(msg) {
+function finalizeCategory(msg, { logReport = true } = {}) {
   const channelCount = channelsForCategoryClient(msg.categoryId).length;
   const errorCount = Object.keys(msg.errors || {}).length;
 
   // The banner can only say how many Channels failed. The console says which
   // ones and what YouTube answered, here rather than only in the background's
   // console, because this one opens with F12 on the page already in front of
-  // the user. A Load in which nothing failed prints nothing.
-  if (msg.diagnostics) {
+  // the user. A Load in which nothing failed prints nothing, and the report is
+  // printed once, when the Load is really over — not on every update the retry
+  // pass sends while the page is already usable.
+  if (logReport && msg.diagnostics) {
     for (const line of Diagnostics.formatLoadReport(msg.diagnostics)) console.warn(line);
   }
 
@@ -236,6 +255,10 @@ function finalizeCategory(msg) {
   }
   if (bannerParts.length > 0) {
     showBanner(bannerParts.join(" · "));
+  } else {
+    // The retry pass can repair every channel that failed, and the banner it
+    // put up earlier in this Load must not outlive what it was reporting.
+    hideBanner();
   }
 }
 
@@ -282,8 +305,10 @@ function clearEmptyState() {
   $("empty-state").replaceChildren();
 }
 
+let bannerDismissed = false;
+
 function showBanner(text) {
-  if (!text) return;
+  if (!text || bannerDismissed) return;
   $("status-banner-text").textContent = text;
   $("status-banner").classList.remove("hidden");
 }

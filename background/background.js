@@ -118,8 +118,27 @@ function mergeAndSort(videosByChannel, channels, limit, watched) {
 // would only keep the page's spinner going for minutes. Channels the budget
 // does not reach keep the failure they already had, which is what a Load
 // without any retry pass would have left them with anyway.
-const FEED_RETRY_SPACING_MS = 400;
-const FEED_RETRY_BUDGET_MS = 20000;
+// 400 ms was too soon to be worth much: on a real 99-channel Load it recovered
+// 10 of 45, well under the ~46% that the same channels answer at when asked
+// once. Channels that were measured recovering did so seconds later, not
+// milliseconds, so the spacing is now long enough to be a genuinely separate
+// attempt, and the budget long enough to reach a whole category's worth of
+// failures rather than stopping a third of the way through.
+const FEED_RETRY_SPACING_MS = 900;
+const FEED_RETRY_BUDGET_MS = 40000;
+
+// Asking the long-form feed for a channel that has none costs a request on every
+// Load only to be told what the previous Load already learned, and for a library
+// where most channels have no long-form uploads that is nearly half the Load.
+// A channel is therefore pinned to the feed that served it — but carefully,
+// because a long-form 404 is not a reliable fact about a channel: YouTube serves
+// them in passing, and channels measured 404ing in the morning answered 200 the
+// same afternoon. One 404 is not evidence, so a channel is pinned only after two
+// Loads in a row have had to fall back, and the pin is re-examined daily, which
+// caps how long a wrongly pinned channel shows the live streams and premieres
+// its long-form feed would have left out.
+const LONG_FORM_RECHECK_MS = 24 * 60 * 60 * 1000;
+const PLAIN_RUNS_BEFORE_PINNING = 2;
 
 // Which channels were reached is recorded on the channels themselves, so there
 // is nothing to report back: a channel the budget skipped simply never gets its
@@ -132,6 +151,15 @@ async function retryFailedChannels(channels, fetchChannel, abandoned) {
     if (abandoned()) return;
     await fetchChannel(channel);
   }
+}
+
+// How many Loads in a row have had to fall back to the plain feed. A Load that
+// did not ask the long-form feed (a pinned channel) leaves the count alone: it
+// learned nothing new about which feed the channel has.
+function plainRunsAfter(entry, result) {
+  const previous = (entry && entry.plainRuns) || 0;
+  if (!result.checkedLongForm) return previous;
+  return result.source === "plain" ? previous + 1 : 0;
 }
 
 async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
@@ -180,6 +208,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
   // channel count suggests.
   let requestCount = 0;
   let servedFromPlain = 0;
+  let skippedLongForm = 0;
 
   const toFetch = [];
   for (const channel of channels) {
@@ -193,7 +222,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
     }
   }
 
-  const postProgress = () => {
+  const postProgress = (extra) => {
     if (disconnected) return;
     const videos = mergeAndSort(videosByChannel, channels, settings.videosPerCategoryLimit, watched);
     safePost({
@@ -201,6 +230,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
       categoryId,
       videos,
       errors: { ...errors },
+      ...extra,
     });
   };
 
@@ -210,9 +240,24 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
   const fetchChannel = async (channel) => {
     // Stamped at request start so a slow, older request can't overwrite a newer result.
     const startedAt = new Date().toISOString();
-    const hadLastGood = Boolean(cache[channel.channelId]);
+    const entry = cache[channel.channelId];
+    const hadLastGood = Boolean(entry);
+    // A channel the last Load served from the plain feed is asked for that feed
+    // alone, until its long-form feed is due to be looked at again.
+    const preferPlain = Boolean(
+      entry &&
+        entry.source === "plain" &&
+        (entry.plainRuns || 0) >= PLAIN_RUNS_BEFORE_PINNING &&
+        entry.longFormCheckedAt &&
+        now - Date.parse(entry.longFormCheckedAt) < LONG_FORM_RECHECK_MS
+    );
+    if (preferPlain) skippedLongForm++;
+
     const clockStart = Date.now();
-    const result = await Rss.fetchChannelVideos(channel.channelId, { hasLastGood: hadLastGood });
+    const result = await Rss.fetchChannelVideos(channel.channelId, {
+      hasLastGood: hadLastGood,
+      preferPlain,
+    });
     const ms = Date.now() - clockStart;
     requestCount += result.requests || 1;
     if (result.status === "ok" && result.source === "plain") servedFromPlain++;
@@ -225,6 +270,14 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
         fetchedAt: startedAt,
         source: result.source,
         videos: result.videos,
+        // Only a Load that actually asked the long-form feed may move the
+        // re-check date on, or a channel pinned to the plain feed would renew
+        // its own pin for ever and never be looked at again.
+        longFormCheckedAt: result.checkedLongForm ? startedAt : entry.longFormCheckedAt,
+        // Consecutive Loads that asked for the long-form feed and still ended up
+        // on the plain one. The long-form feed serving the channel clears it, so
+        // a single passing 404 can never reach the pinning threshold.
+        plainRuns: plainRunsAfter(entry, result),
       });
     } else {
       // Failures never touch the cache: keep the last good list (already in
@@ -274,6 +327,14 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
       const result = await fetchChannel(channel);
       if (result.status === "failed" && result.retryable) toRetry.push(channel);
     });
+
+    // Every channel has now been asked once, which is as much as the page needs
+    // before it is usable. The retry pass can take most of a minute on a large
+    // category, and holding Refresh disabled for all of it would make a bad Load
+    // feel worse than the failures it is busy repairing — so the page is handed
+    // back here, and each channel the retry recovers arrives as an ordinary
+    // progress update that ticks the failure count down.
+    postProgress({ firstPassDone: true });
     // Marked after the fetch, because a fetch that fails again replaces the
     // channel's entry: without this, a channel the budget never reached would
     // be reported as "still failing after a retry" that never happened.
@@ -297,6 +358,7 @@ async function handleGetCategoryFeed(categoryId, forceRefresh, port) {
     elapsedMs: Date.now() - loadStart,
     requestCount,
     servedFromPlain,
+    skippedLongForm,
     retried,
     retryBudgetMs: FEED_RETRY_BUDGET_MS,
     failures: [...failures.values()],

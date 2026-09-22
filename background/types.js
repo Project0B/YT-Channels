@@ -30,6 +30,11 @@
  * @property {number} v - Storage.CACHE_ENTRY_VERSION; entries without it are ignored.
  * @property {string} fetchedAt - ISO time the request started (not finished).
  * @property {"long-form"|"plain"} source - Which Uploads feed the videos came from.
+ * @property {number} [plainRuns] - Consecutive Loads that asked for the Long-form feed and
+ *   still fell back to the Plain one. Two of them pin the Channel to the Plain feed.
+ * @property {string} [longFormCheckedAt] - ISO time the Long-form feed was last actually
+ *   asked. Absent on entries written before this was recorded, which simply means the next
+ *   Load asks for both feeds and fills it in.
  * @property {Video[]} videos
  *
  * @typedef {Object.<string, CacheEntry>} Cache
@@ -56,7 +61,8 @@
  * @property {number} concurrency
  * @property {number} elapsedMs
  * @property {number} requestCount feed requests made, which exceeds fetchedCount
- * @property {number} servedFromPlain Channels answered from the Plain feed, each costing two requests
+ * @property {number} servedFromPlain Channels answered from the Plain feed
+ * @property {number} skippedLongForm Channels asked only for the Plain feed that last served them
  * @property {number} retried how many Channels the retry pass was given
  * @property {number} retryBudgetMs how long the retry pass was allowed to take
  * @property {ChannelFailure[]} failures every Channel that failed at least once, in order

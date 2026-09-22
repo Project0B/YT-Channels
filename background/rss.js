@@ -306,7 +306,26 @@ function failedResult(err, feed, alsoFailed) {
     // The plain feed is only ever read after the long-form feed has been tried,
     // so a result that names it cost two requests.
     requests: feed === "plain" || alsoFailed ? 2 : 1,
+    checkedLongForm: true,
   };
+}
+
+/**
+ * Fetch a channel's videos from the plain feed alone, for a channel already known to be
+ * served from it. Asking the long-form feed first would spend a request to be told again
+ * what the last Load already learned — for a library where most channels have no
+ * long-form uploads, that is nearly half of every Load. `checkedLongForm: false` tells
+ * the caller not to move the channel's re-check date on.
+ * @param {string} channelId
+ * @returns {Promise<object>}
+ */
+async function fetchPlainOnly(channelId) {
+  try {
+    const videos = await fetchFeed(plainChannelFeedUrl(channelId));
+    return { status: "ok", videos, source: "plain", requests: 1, checkedLongForm: false };
+  } catch (plainError) {
+    return { ...failedResult(plainError, "plain"), requests: 1, checkedLongForm: false };
+  }
 }
 
 /**
@@ -320,18 +339,23 @@ function failedResult(err, feed, alsoFailed) {
  * A failure also says whether it is worth another try later
  * (see isTransientFeedError); the caller decides when, so that a retry does not join the
  * burst of requests that provoked the failure.
+ * `preferPlain` skips straight to the plain feed for a channel the caller knows is served
+ * from it; every result says in `checkedLongForm` whether the long-form feed was actually
+ * asked, so the caller can decide when to look again.
  * @param {string} channelId
- * @param {{hasLastGood?: boolean}} [options]
+ * @param {{hasLastGood?: boolean, preferPlain?: boolean}} [options]
  * @returns {Promise<
  *   {status: "ok", videos: Video[], source: "long-form"|"plain", requests: number} |
  *   {status: "stopgap", videos: Video[], error: string, kind: string, httpStatus: number|undefined, feed: "long-form", requests: number} |
  *   {status: "failed", error: string, retryable: boolean, kind: string, httpStatus: number|undefined, feed: "long-form"|"plain", requests: number}>}
  */
-async function fetchChannelVideos(channelId, { hasLastGood = false } = {}) {
+async function fetchChannelVideos(channelId, { hasLastGood = false, preferPlain = false } = {}) {
+  if (preferPlain) return fetchPlainOnly(channelId);
+
   let longFormError = null;
   try {
     const videos = await fetchFeed(longFormFeedUrl(channelId));
-    if (videos.length > 0) return { status: "ok", videos, source: "long-form", requests: 1 };
+    if (videos.length > 0) return { status: "ok", videos, source: "long-form", requests: 1, checkedLongForm: true };
   } catch (e) {
     longFormError = e;
   }
@@ -347,11 +371,12 @@ async function fetchChannelVideos(channelId, { hasLastGood = false } = {}) {
   try {
     const videos = await fetchFeed(plainChannelFeedUrl(channelId));
     return noLongForm
-      ? { status: "ok", videos, source: "plain", requests: 2 }
+      ? { status: "ok", videos, source: "plain", requests: 2, checkedLongForm: true }
       : {
           status: "stopgap",
           videos,
           requests: 2,
+          checkedLongForm: true,
           error: longFormError.message,
           // The Feed page counts a stopgap among the channels that failed to
           // update, so it carries what the console needs to explain it too.

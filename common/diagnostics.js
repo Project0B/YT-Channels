@@ -71,10 +71,16 @@ function formatLoadReport(report) {
   // burst YouTube sees is bigger than the channel count. Worth stating plainly
   // when a Load has gone badly, because it is the size of that burst that
   // decides how much of it comes back broken.
-  if (report.requestCount > report.fetchedCount) {
+  if (report.requestCount !== report.fetchedCount || report.skippedLongForm > 0) {
+    const extra = report.requestCount - report.fetchedCount;
+    const parts = [];
+    if (extra > 0) parts.push(`${extra} of them a second try on the plain feed`);
+    if (report.skippedLongForm > 0) {
+      parts.push(`${report.skippedLongForm} went straight to the plain feed they were last served from`);
+    }
     lines.push(
       `${LOG_PREFIX}   ${report.requestCount} requests for ${report.fetchedCount} channels` +
-        ` — ${report.requestCount - report.fetchedCount} of them a second try on the plain feed`
+        (parts.length ? ` — ${parts.join(", ")}` : "")
     );
   }
 
