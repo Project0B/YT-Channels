@@ -22,7 +22,8 @@ No API key, no setup beyond installing and adding channels.
 
 - **From Mozilla Add-ons**: [YT Channels add-on](https://addons.mozilla.org/en-US/firefox/addon/yt-channels/)
 - **Temporary/dev install (Firefox)**: clone this repo, open `about:debugging#/runtime/this-firefox` in Firefox, click **Load Temporary Add-on**, and select `manifest.json` from this folder.
-- **Chrome and Edge (148 or newer)**: not in a store yet. Build the Chromium package with `node tools/package.mjs chromium --dev` (see [Packaging](#packaging)), open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, click **Load unpacked**, and select the `dist/chromium` folder. Chrome hides new extensions in the puzzle-piece menu next to the address bar: pin YT Channels there to get its toolbar button.
+- **From Microsoft Edge Add-ons**: [YT Channels add-on](https://microsoftedge.microsoft.com/addons/detail/yt-channels/anlohjconpaencliifaaloebbgahaeef) (Edge 148 or newer)
+- **Chrome (148 or newer)**: not in the Chrome Web Store yet. Build the Chromium package with `node tools/package.mjs chromium --dev` (see [Packaging](#packaging)), open `chrome://extensions` (or `edge://extensions`), turn on **Developer mode**, click **Load unpacked**, and select the `dist/chromium` folder. Chrome hides new extensions in the puzzle-piece menu next to the address bar: pin YT Channels there to get its toolbar button.
 
 ## Known limitations
 
@@ -30,7 +31,7 @@ No API key, no setup beyond installing and adding channels.
 - Live streams/premieres don't show up for channels that also have regular uploads, as a side effect of the feed used to filter Shorts out. Channels with no regular uploads at all show their streams instead, and channels that only post Shorts show nothing.
 - YouTube's feed service is unreliable for some channels, more often smaller ones: it answers a request with an error and the same request with the video list moments later. A category tries a failed channel again before reporting it, and keeps showing that channel's previous videos meanwhile, but some updates still fail. Pressing Refresh again usually clears them.
 - Watch progress is only recorded for videos you watch in this browser. There is no cloud sync or automatic background notifications in this version.
-- Requires Firefox 140 or newer, or Chrome/Edge 148 or newer for the Chromium build (checked automatically on Chrome and Edge 153; not yet in a store). Firefox for Android, Safari and Opera are not supported.
+- Requires Firefox 140 or newer, or Chrome/Edge 148 or newer for the Chromium build (checked automatically on Chrome and Edge 153; not yet in the Chrome Web Store). Firefox for Android, Safari and Opera are not supported.
 
 ## Privacy
 
