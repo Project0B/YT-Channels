@@ -28,6 +28,7 @@ No API key, no setup beyond installing and adding channels.
 
 - YouTube's RSS feeds cap at the 15 most recent uploads per channel — a channel that posts more than 15 times between visits will show gaps, not a full history.
 - Live streams/premieres don't show up for channels that also have regular uploads, as a side effect of the feed used to filter Shorts out. Channels with no regular uploads at all show their streams instead, and channels that only post Shorts show nothing.
+- YouTube's feed service is unreliable for some channels, more often smaller ones: it answers a request with an error and the same request with the video list moments later. A category tries a failed channel again before reporting it, and keeps showing that channel's previous videos meanwhile, but some updates still fail. Pressing Refresh again usually clears them.
 - Watch progress is only recorded for videos you watch in this browser. There is no cloud sync or automatic background notifications in this version.
 - Requires Firefox 140 or newer, or Chrome/Edge 148 or newer for the Chromium build (checked automatically on Chrome and Edge 153; not yet in a store). Firefox for Android, Safari and Opera are not supported.
 

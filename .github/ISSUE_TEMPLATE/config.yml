@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Suggest a feature
+    url: https://forms.gle/ikP5KUtdFz3VWreX7
+    about: Feature suggestions go through this form rather than the issue tracker.
+  - name: A category says channels failed to update
+    url: https://github.com/Project0B/YT-Channels/blob/main/README.md#reporting-bugs
+    about: YouTube's feeds fail intermittently. Here is how to see which channels and why before filing.

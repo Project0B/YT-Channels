@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in YT Channels does not work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **If a category says channels failed to update**, the console has the details.
+        Press <kbd>F12</kbd> on the YT Channels tab, open the Console, press Refresh, and copy the
+        lines starting with `[YT Channels]` into the box below. They name each channel, which feed
+        was used and what YouTube answered. Nothing is logged when everything loads normally, and
+        nothing is ever sent anywhere — see [PRIVACY.md](../blob/main/PRIVACY.md).
+
+        The lines include the names and IDs of the channels that failed. Remove any you would
+        rather not post publicly.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what did you see?
+      placeholder: I opened the Science category and…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: false
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: The `[YT Channels]` lines, if there are any. Leave empty if the console showed none.
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Firefox
+        - Chrome
+        - Edge
+        - Other Chromium browser
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Browser version and extension version
+      description: The extension's version is on the Manage page; the browser's is in its About screen.
+      placeholder: Firefox 156.0, YT Channels 1.2.2
+    validations:
+      required: true
+
+  - type: input
+    id: scale
+    attributes:
+      label: Roughly how many channels and categories do you have?
+      description: Some problems only appear with a large list.
+      placeholder: about 100 channels in 6 categories
+    validations:
+      required: false
