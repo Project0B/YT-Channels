@@ -598,7 +598,11 @@ async function handleMessage(message) {
       const category = {
         id: Storage.genId("cat"),
         name,
-        order: config.categories.length,
+        // One past the highest order in use, not the number of categories:
+        // deleting a category used to leave a gap, so `length` could equal an
+        // order already taken and the new category would sort into the middle
+        // of the tab bar instead of onto the end.
+        order: config.categories.reduce((max, c) => Math.max(max, Number(c.order) || 0), -1) + 1,
       };
       config.categories.push(category);
       await Storage.setConfig(config);
@@ -623,6 +627,12 @@ async function handleMessage(message) {
     case "DELETE_CATEGORY": {
       const config = await Storage.getConfig();
       config.categories = config.categories.filter((c) => c.id !== message.categoryId);
+      // Close the gap the removed category leaves, so the sequence stays dense
+      // and orders that are already duplicated heal on the next delete.
+      config.categories.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
+      config.categories.forEach((c, index) => {
+        c.order = index;
+      });
       for (const channel of config.channels) {
         channel.categoryIds = channel.categoryIds.filter((id) => id !== message.categoryId);
       }

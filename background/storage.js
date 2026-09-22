@@ -79,17 +79,29 @@ async function getCacheEntry(channelId) {
   return cache[channelId] || null;
 }
 
-// setCacheEntry() is a read-modify-write over the single shared `cache`
-// storage key. handleGetCategoryFeed() in background.js calls this once per
-// channel from parallel runWithConcurrency() workers, so without
-// serialization two calls can both read the cache before either writes back
-// — the later write then silently clobbers the earlier channel's entry.
-// Chaining every call onto a single promise forces writes for *any* channel
-// to run one at a time, so each one's getCache() always sees the previous
-// one's setCache() having already landed. The chain continues past a
-// failed write (via the second .then handler) so one rejected write doesn't
-// wedge every subsequent call.
-let cacheWriteChain = Promise.resolve();
+// `cache` and `watched` are each one object in storage, rewritten whole to
+// change a single key. Two overlapping writers therefore both read the same
+// snapshot and the later write silently drops the earlier one's change.
+// Chaining every write onto a single promise makes writes for *any* key run
+// one at a time, so each one's read always sees the previous one's write
+// having already landed. The chain continues past a failed job (via the
+// second .then handler) so one rejected write cannot wedge every later one.
+//
+// Each storage key gets its own chain: they never share a read-modify-write,
+// so making a slow cache write hold up a watch-progress write would only add
+// latency.
+function writeSerializer() {
+  let chain = Promise.resolve();
+  return (job) => {
+    const task = chain.then(job, job);
+    chain = task.catch(() => {});
+    return task;
+  };
+}
+
+// handleGetCategoryFeed() in background.js writes one cache entry per channel
+// from parallel runWithConcurrency() workers.
+const enqueueCacheWrite = writeSerializer();
 
 async function writeCacheEntry(channelId, entry) {
   const cache = await getCache();
@@ -99,12 +111,6 @@ async function writeCacheEntry(channelId, entry) {
   if (current && Date.parse(current.fetchedAt) > Date.parse(entry.fetchedAt)) return;
   cache[channelId] = entry;
   await setCache(cache);
-}
-
-function enqueueCacheWrite(job) {
-  const task = cacheWriteChain.then(job, job);
-  cacheWriteChain = task.catch(() => {});
-  return task;
 }
 
 function setCacheEntry(channelId, entry) {
@@ -169,6 +175,11 @@ async function setWatchedMap(map) {
   await browser.storage.local.set({ [STORAGE_KEYS.WATCHED]: map });
 }
 
+// The watch page reports progress every few seconds from every playing tab,
+// and the Feed page's toggle writes from another page entirely, so the
+// `watched` map has more overlapping writers than the cache does, not fewer.
+const enqueueWatchedWrite = writeSerializer();
+
 // Watched entries are tiny but never expire, and the whole map is rewritten on every
 // progress report. Once it is large, drop entries that are old and no longer in any
 // cached feed — only a video still listed in a feed can show its progress bar.
@@ -195,30 +206,34 @@ async function pruneWatched(map) {
 // *maximum* progress reached per videoId — scrubbing backward, or reopening
 // a mostly-watched video and bailing early, must never lower a video's
 // recorded progress.
-async function updateWatchProgress(videoId, progress) {
-  const current = await getWatched();
-  const clamped = Math.min(1, Math.max(0, progress));
-  const existing = current[videoId];
-  if (existing && existing.progress >= clamped) return existing;
-  const entry = { progress: clamped, updatedAt: new Date().toISOString() };
-  current[videoId] = entry;
-  await pruneWatched(current);
-  await setWatchedMap(current);
-  return entry;
+function updateWatchProgress(videoId, progress) {
+  return enqueueWatchedWrite(async () => {
+    const current = await getWatched();
+    const clamped = Math.min(1, Math.max(0, progress));
+    const existing = current[videoId];
+    if (existing && existing.progress >= clamped) return existing;
+    const entry = { progress: clamped, updatedAt: new Date().toISOString() };
+    current[videoId] = entry;
+    await pruneWatched(current);
+    await setWatchedMap(current);
+    return entry;
+  });
 }
 
 // Manual override from the feed page's corner toggle — explicit user intent
 // ("I watched this elsewhere" / "reset this"), not a progress observation,
 // so unlike updateWatchProgress() above it isn't clamped against the
 // existing value; it replaces it outright.
-async function setManualWatchedState(videoId, watched) {
-  const current = await getWatched();
-  if (watched) {
-    current[videoId] = { progress: 1, updatedAt: new Date().toISOString() };
-  } else {
-    delete current[videoId];
-  }
-  await setWatchedMap(current);
+function setManualWatchedState(videoId, watched) {
+  return enqueueWatchedWrite(async () => {
+    const current = await getWatched();
+    if (watched) {
+      current[videoId] = { progress: 1, updatedAt: new Date().toISOString() };
+    } else {
+      delete current[videoId];
+    }
+    await setWatchedMap(current);
+  });
 }
 
 const Storage = {
