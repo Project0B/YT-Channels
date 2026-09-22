@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Channels",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Curated category feeds for the YouTube channels you follow — grouped, on-demand, no algorithm.",
   "author": "Project B",
   "icons": {
@@ -14,6 +14,7 @@
   "background": {
     "scripts": [
       "background/types.js",
+      "common/diagnostics.js",
       "background/storage.js",
       "background/rss.js",
       "background/resolve.js",
